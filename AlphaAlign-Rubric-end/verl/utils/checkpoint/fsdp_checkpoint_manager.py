@@ -114,13 +114,10 @@ class FSDPCheckpointManager(BaseCheckpointManager):
         if local_path is None:
             return
 
-        # TEMP HOTFIX: force keep-all behavior for every FSDP checkpoint save.
-        # TODO: remove this hardcode after root-cause is identified.
-        max_ckpt_to_keep = -1
-
         # record the previous global step
         self.previous_global_step = global_step
-
+        # 后续这部分内容需要去掉呢！！！！
+        max_ckpt_to_keep = -1
         # remove previous local_path
         if max_ckpt_to_keep and isinstance(max_ckpt_to_keep, int) and max_ckpt_to_keep > 0 and len(
                 self.previous_saved_paths) >= max_ckpt_to_keep:

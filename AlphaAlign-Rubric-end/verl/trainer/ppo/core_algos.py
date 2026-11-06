@@ -107,7 +107,10 @@ def compute_gae_advantage_return(token_level_rewards: torch.Tensor, values: torc
 def compute_grpo_outcome_advantage(token_level_rewards: torch.Tensor,
                                    response_mask: torch.Tensor,
                                    index: np.ndarray,
-                                   epsilon: float = 1e-6):
+                                   epsilon: float = 1e-6,
+                                   std_floor: float = 0.0,
+                                   presentation_reward_components=None,
+                                   presentation_adv_cap: float = 0.05):
     """
     Compute advantage for GRPO, operating only on Outcome reward 
     (with only one scalar reward for each response).
@@ -143,9 +146,17 @@ def compute_grpo_outcome_advantage(token_level_rewards: torch.Tensor,
             else:
                 raise ValueError(f"no score in prompt index: {idx}")
         for i in range(bsz):
-            scores[i] = (scores[i] - id2mean[index[i]]) / (id2std[index[i]] + epsilon)
+            # Opt-in floor prevents tiny rubric residuals becoming unit-scale
+            # updates when all eight original rollout rewards are tied.
+            denominator = torch.clamp(id2std[index[i]], min=max(0.0, std_floor)) + epsilon
+            scores[i] = (scores[i] - id2mean[index[i]]) / denominator
         scores = scores.unsqueeze(-1) * response_mask
 
+    if presentation_reward_components is not None:
+        from verl.utils.presentation_reward import bounded_grpo
+        return bounded_grpo(token_level_rewards, response_mask, index, scores,
+                            presentation_reward_components, epsilon, std_floor,
+                            presentation_adv_cap)
     return scores, scores
 
 

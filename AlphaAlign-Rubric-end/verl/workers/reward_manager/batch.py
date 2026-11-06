@@ -19,6 +19,8 @@ from collections import defaultdict, Counter
 import json
 import ast
 
+from verl.utils.judge_filter import append_dense_reward_extras
+
 
 
 
@@ -177,6 +179,7 @@ class BatchRewardManager:
 
         reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
         reward_extra_info = defaultdict(list)
+        reward_trace_info = []
         prompt_ids = data.batch['prompts']
         prompt_len = prompt_ids.shape[-1]
         attention_mask = data.batch['attention_mask']
@@ -189,24 +192,37 @@ class BatchRewardManager:
         uid_to_qidx = {}
 
         scores, valid_mask = self.verify(data)
+        if any(isinstance(s, dict) and s.get("judge_failed", False) for s in scores):
+            if not data.meta_info.get("allow_judge_group_drop", False):
+                from verl.utils.validation_recovery import enabled, JudgeScoringUnavailable
+                if enabled():
+                    raise JudgeScoringUnavailable(
+                        "Judge scoring failed outside group-filtered training; no valid evaluation score",
+                        evidence={"reward_traces": scores, "valid_mask": valid_mask})
+                raise RuntimeError("Judge scoring failed outside group-filtered training; no valid evaluation score")
         rewards = []
         already_printed = {}
 
         for i in range(len(data)):
             length = valid_response_lengths[i].item()
             score = scores[i]
+            numeric_extra = {}
 
             if isinstance(score, dict):
                 reward = score["score"]
+                reward_trace_info.append(dict(score))
                 for key, value in score.items():
                     if isinstance(value, (int, float, bool)):
-                        reward_extra_info[key].append(value)
+                        numeric_extra[key] = value
                     elif isinstance(value, dict):
                         for sub_key, sub_val in value.items():
                             if isinstance(sub_val, (int, float, bool)):
-                                reward_extra_info[f"{key}/{sub_key}"].append(sub_val)
+                                numeric_extra[f"{key}/{sub_key}"] = sub_val
             else:
                 reward = score
+                reward_trace_info.append({"score": score})
+
+            append_dense_reward_extras(reward_extra_info, numeric_extra, i)
 
             rewards.append(reward)
             reward_tensor[i, length - 1] = reward
@@ -262,7 +278,17 @@ class BatchRewardManager:
 
         data.batch['acc'] = torch.tensor(rewards, dtype=torch.float32, device=prompt_ids.device)
 
+        # Preserve the distinction between judge reward and the reward used by GRPO.
+        for i, trace in enumerate(reward_trace_info):
+            trace["extra_info_valid"] = bool(valid_mask[i])
+            trace["effective_reward"] = float(rewards[i])
+            trace["reward_replaced_by_group_mean"] = not valid_mask[i]
+
         if return_dict:
-            return {"reward_tensor": reward_tensor, "reward_extra_info": reward_extra_info}
+            return {
+                "reward_tensor": reward_tensor,
+                "reward_extra_info": reward_extra_info,
+                "reward_trace_info": reward_trace_info,
+            }
         else:
             return reward_tensor

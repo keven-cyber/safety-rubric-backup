@@ -60,6 +60,11 @@ def main(config):
 
 
 def run_ppo(config) -> None:
+    if os.getenv("RUBRIC_RUN_DIR"):
+        from omegaconf import OmegaConf
+        from verl.utils.training_evidence import atomic_json, redact_config
+        atomic_json(os.path.join(os.environ["RUBRIC_RUN_DIR"], "effective_config.json"),
+                    redact_config(OmegaConf.to_container(config, resolve=True)))
     # TODO(linjunrong.ocss884): this ENV is left for resolving SGLang conflict with ray devices
     # isolation, will solve in the future
     os.environ["ENSURE_CUDA_VISIBLE_DEVICES"] = os.environ.get('CUDA_VISIBLE_DEVICES', '')
@@ -194,8 +199,16 @@ class TaskRunner:
                                 ray_worker_group_cls=ray_worker_group_cls,
                                 reward_fn=reward_fn,
                                 val_reward_fn=val_reward_fn)
+        if os.getenv('RUBRIC_VALIDATION_REPLAY_ENABLE', '0') == '1':
+            from verl.utils.final_stage_resume import validation_replay
+            validation_replay(trainer)
+            return
         trainer.init_workers()
-        trainer.fit()
+        if os.getenv('RUBRIC_FROZEN_REVIEW_ENABLE', '0') == '1':
+            from verl.utils.frozen_validation_review import run
+            run(trainer)
+        else:
+            trainer.fit()
 
 
 if __name__ == '__main__':

@@ -1,0 +1,13 @@
+{
+  "release_date": "2026-11-06",
+  "source_commit": "b515aaccffe5149a7ac6fb00b54ad8da671eb386",
+  "scope": "Current RubricAlign training, baseline and evaluation dependencies with the required targeted-C corpus",
+  "privacy_changes": [
+    "Removed hardcoded key fallbacks; credentials are supplied through environment variables",
+    "Removed internal service defaults and machine-specific paths",
+    "Removed obsolete backup modules and unrelated benchmark task definitions",
+    "Removed internal storage location from dataset manifest; original eight Parquet files are unchanged"
+  ],
+  "dataset_integrity": "data/dataset_integrity.json",
+  "validation_limit": "CPU checks and data integrity checks do not establish a new GPU reproduction of paper results"
+}

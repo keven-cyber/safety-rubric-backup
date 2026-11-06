@@ -14,11 +14,33 @@
 # from . import gsm8k, math, prime_math, prime_code
 
 
+def _normalize_data_source(data_source):
+    """Align reward routing with NaiveRewardManager normalization."""
+    normalized_data_source = data_source
+    if isinstance(data_source, str):
+        ds_lower = data_source.lower()
+        if ds_lower in {
+                "benign",
+                "sensitive",
+                "senstive",
+                "sensitive_benign",
+                "senstive_benign",
+                "xstest_benign",
+        }:
+            normalized_data_source = "xstest/benign"
+        elif ds_lower in {"harm", "enhanced_harm", "xstest_harm", "xtest_harm", "xtest_har"}:
+            normalized_data_source = "xstest/harm"
+    return normalized_data_source
+
+
 def _default_compute_score(data_source, solution_str, ground_truth, extra_info=None):
-    if data_source == 'openai/gsm8k':
+    normalized_data_source = _normalize_data_source(data_source)
+    ds_text = normalized_data_source if isinstance(normalized_data_source, str) else str(normalized_data_source)
+
+    if normalized_data_source == 'openai/gsm8k':
         from . import gsm8k
         res = gsm8k.compute_score(solution_str, ground_truth)
-    elif data_source in ['lighteval/MATH', 'DigitalLearningGmbH/MATH-lighteval']:
+    elif normalized_data_source in ['lighteval/MATH', 'DigitalLearningGmbH/MATH-lighteval']:
         from . import math
         res = math.compute_score(solution_str, ground_truth)
         # [Optional] Math-Verify Integration
@@ -28,45 +50,33 @@ def _default_compute_score(data_source, solution_str, ground_truth, extra_info=N
 
         # from . import math_verify
         # res = math_verify.compute_score(solution_str, ground_truth)
-    elif data_source == 'math_dapo' or data_source.startswith("aime"):
+    elif normalized_data_source == 'math_dapo' or ds_text.startswith("aime"):
         from . import math_dapo
         res = math_dapo.compute_score(solution_str, ground_truth)
-    elif data_source in [
+    elif normalized_data_source in [
             'numina_aops_forum', 'numina_synthetic_math', 'numina_amc_aime', 'numina_synthetic_amc', 'numina_cn_k12',
             'numina_olympiads'
     ]:
         from . import prime_math
         res = prime_math.compute_score(solution_str, ground_truth)
-    elif data_source in ['codecontests', 'apps', 'codeforces', 'taco']:
+    elif normalized_data_source in ['codecontests', 'apps', 'codeforces', 'taco']:
         from . import prime_code
         res = prime_code.compute_score(solution_str, ground_truth, continuous=True)
-    elif data_source in ['hiyouga/geometry3k']:
+    elif normalized_data_source in ['hiyouga/geometry3k']:
         from . import geo3k
         res = geo3k.compute_score(solution_str, ground_truth)
-    # TODO：这里应该是AlphaAlign的compute_score
-    elif (
-        'benign' in data_source
-        or 'harm' in data_source
-        or 'enhanced_harm' in data_source
-        or 'sensitive' in data_source
-        or 'senstive' in data_source
-        or 'xstest_benign' in data_source
-        or 'xstest_harm' in data_source
-    ):
-        from . import rubric_judge
-        res = rubric_judge.compute_score(solution_str, extra_info=extra_info)
 
-    elif (
-        'circuitbreaker' in data_source
-        or 'dolly' in data_source
-        or 'coconot' in data_source
-        or 'xstest' in data_source
-    ):
+    # Legacy routing (before normalization):
+    # elif 'circuitbreaker' in data_source or 'dolly' in data_source or 'coconot' in data_source or 'xstest' in data_source:
+    #     from . import curcuit
+    #     res = curcuit.compute_score(solution_str, ground_truth, extra_info)
+    elif 'circuitbreaker' in ds_text or 'dolly' in ds_text or 'coconot' in ds_text or 'xstest' in ds_text:
         from . import curcuit
-        # breakpoint()
         res = curcuit.compute_score(solution_str, ground_truth, extra_info)
     else:
-        raise NotImplementedError(f"Reward function is not implemented for {data_source=}")
+        raise NotImplementedError(
+            f"Reward function is not implemented for {data_source=}, {normalized_data_source=}"
+        )
 
     if isinstance(res, dict):
         return res

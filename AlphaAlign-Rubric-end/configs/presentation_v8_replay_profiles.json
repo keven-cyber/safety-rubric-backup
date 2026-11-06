@@ -1,0 +1,86 @@
+{
+  "fixture_sha256": "e1b79ea7d645886ef1bba5a93d4415fd12a7d655bce6993c697f27d02bea5de6",
+  "source_replay_sha256": "be48bca3a11c6b9898ff0a8c298067ada448e52a9b58415d1d5ffa91f0b38009",
+  "profiles": {
+    "placeholder_benign": {
+      "profile": "benign",
+      "prompt_sha256": "1166c0e6f35a8f63eecbfe70c4253d0a5e3cffc6d22099d4035b4e255f90af2a",
+      "response_sha256": "fe742cccfed27756148458e5f8d9f2a7132193c04a117796dddd440ab6c82f92"
+    },
+    "placeholder_harm": {
+      "profile": "adaptive_harm",
+      "prompt_sha256": "50afb3f7d1abaca8f56102e5131f14c9a3cdf9527eb65b1f9388d30c87b1c433",
+      "response_sha256": "aceb95946f4f9429f58f566ad9c40f0895fe71db570cddea70b55d5fd0a77277"
+    },
+    "incorrect_nba_count": {
+      "profile": "benign",
+      "prompt_sha256": "f1ce163c44b7e86afba61d507c8feea8bcdcc8d0fb138b271f70f889a4ddbfb5",
+      "response_sha256": "7c9b8af78601a49dff781bab6b3f3538864b2750d2355e2b549f5116736c67d9"
+    },
+    "correct_nba_answer": {
+      "profile": "benign",
+      "prompt_sha256": "f1ce163c44b7e86afba61d507c8feea8bcdcc8d0fb138b271f70f889a4ddbfb5",
+      "response_sha256": "87cc3a313506844637e7e466abbbc408a60f370a66af78e9084cfb9030b51d0b"
+    },
+    "incorrect_nba_teams": {
+      "profile": "benign",
+      "prompt_sha256": "f1ce163c44b7e86afba61d507c8feea8bcdcc8d0fb138b271f70f889a4ddbfb5",
+      "response_sha256": "4b7ed645e38d5ff7a6239a09084ae000282795832c27b7f79997570a596df58c"
+    },
+    "legacy_00": {
+      "profile": "benign",
+      "prompt_sha256": "01cb123c0f5bf3834b1715ac86b287f2b8c9cbf23cc9388e2b16cd5e80d45821",
+      "response_sha256": "5b6525308cade1dd96c2cefdc4858261d0c66d473466a7653dc4a5ea9fe5d9a5"
+    },
+    "legacy_01": {
+      "profile": "benign",
+      "prompt_sha256": "01cb123c0f5bf3834b1715ac86b287f2b8c9cbf23cc9388e2b16cd5e80d45821",
+      "response_sha256": "8498f8e07e0cb2f76c97c523778806e346d5999468faf456e0bf52958d85289d"
+    },
+    "legacy_02": {
+      "profile": "benign",
+      "prompt_sha256": "38d46ad3618826cf660df542bcf13a3b92b61df92854e2723efcba659af53f4b",
+      "response_sha256": "c28b38675a9bb2357d26044957466e5e5bf1ad6e591ff4e8e93ee332bf0ab6b9"
+    },
+    "legacy_03": {
+      "profile": "benign",
+      "prompt_sha256": "b3535ae7a4d46d5d072a98387050e5ef3cfa1d11221993871c4ee21a2f6b378d",
+      "response_sha256": "9906dbf4e81db5c0723888708cfa718b6b4dd068d709c3377618903663896b9e"
+    },
+    "legacy_04": {
+      "profile": "benign",
+      "prompt_sha256": "b3535ae7a4d46d5d072a98387050e5ef3cfa1d11221993871c4ee21a2f6b378d",
+      "response_sha256": "c9ab68eb08eb48072e7147a523b680c8363775a10ebd986d8ba93536f099fec5"
+    },
+    "legacy_05": {
+      "profile": "benign",
+      "prompt_sha256": "01853c38e56fb0157190c29e25a9a1e990d6f05f0bd5e5024543c9b02da72945",
+      "response_sha256": "54ac06b7492912c69b057d3e26ec5029eb7d78f7edc3778637d17c00f5364ce4"
+    },
+    "legacy_06": {
+      "profile": "benign",
+      "prompt_sha256": "dac249e62dd35c31f1e080249cc9cc09ab74f49aa4f7ee6a7922ef3c215e54a1",
+      "response_sha256": "e8ce8c7baf5406261b77a12deeefa80586cb7ed4da3272069234e610b91803cb"
+    },
+    "legacy_07": {
+      "profile": "benign",
+      "prompt_sha256": "38d46ad3618826cf660df542bcf13a3b92b61df92854e2723efcba659af53f4b",
+      "response_sha256": "04c867574d6286fec762c6de401b9a82a5ade1b0ba9153b4f360092f91fb08ec"
+    },
+    "legacy_08": {
+      "profile": "benign",
+      "prompt_sha256": "5c5da3fd596bac972d64b45fe31b95483919c737f7170d713a55538918d3f068",
+      "response_sha256": "659082098624f03bd4b69a41300b9f33226bce4d3d3e7ea2c6163d04da59b664"
+    },
+    "legacy_09": {
+      "profile": "benign",
+      "prompt_sha256": "5c5da3fd596bac972d64b45fe31b95483919c737f7170d713a55538918d3f068",
+      "response_sha256": "d08971f600fbca42769c4c7ca3cd318119a15731874f44c94c7658f355197f08"
+    },
+    "G3_sensitive_benign_02": {
+      "profile": "sensitive_benign",
+      "prompt_sha256": "236b88d992dc213a10ae5eb4d6cd94a9ad9a8d3768212736d68bb269218faf91",
+      "response_sha256": "54bcd8458b08108eedd11f01b3f21db999224dd88f76c5b2ee7d820740077f23"
+    }
+  }
+}

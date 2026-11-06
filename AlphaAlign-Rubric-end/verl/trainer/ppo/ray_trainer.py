@@ -17,6 +17,7 @@ This trainer supports model-agonistic model initialization with huggingface
 """
 
 import os
+from pathlib import Path
 import shutil
 import re
 import uuid
@@ -42,6 +43,7 @@ from verl.single_controller.base import Worker
 from verl.single_controller.ray import RayResourcePool, RayWorkerGroup, RayClassWithInitArgs
 from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.trainer.ppo import core_algos
+from verl.utils.training_evidence import atomic_json, write_step, redact_config, fingerprint
 from verl.trainer.ppo.metric_utils import compute_data_metrics, compute_throughout_metrics, compute_timing_metrics, reduce_metrics, bootstrap_metric, calc_maj_val, process_validation_metrics
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path
@@ -51,6 +53,126 @@ from torch.utils.data import RandomSampler, SequentialSampler
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 WorkerType = Type[Worker]
+
+
+def _call_reward_once(reward_fn, batch):
+    """Detect legacy signatures before execution; never retry a failed batch."""
+    import inspect
+    signature = inspect.signature(reward_fn)
+    try:
+        signature.bind(batch, return_dict=True)
+    except TypeError:
+        signature.bind(batch)
+        result = reward_fn(batch)
+    else:
+        result = reward_fn(batch, return_dict=True)
+    if isinstance(result, dict):
+        if not {'reward_tensor', 'reward_extra_info'} <= result.keys():
+            raise ValueError('Incomplete reward manager result')
+        return result
+    if not torch.is_tensor(result):
+        raise TypeError('Reward manager must return a tensor or complete result dict')
+    return dict(reward_tensor=result, reward_extra_info={}, reward_trace_info=[])
+
+
+def _write_training_batch_gate(batch, traces, step, dataset_rows, original_group_filter=None, checkpoint_recovery=None, generation_snapshot=None):
+    """Validate the actual rollout -> reward -> advantage path before updates."""
+    from collections import Counter
+    from pathlib import Path
+    import hashlib
+    root = Path(__file__).resolve().parents[3]
+    counts = Counter(str(uid) for uid in batch.non_tensor_batch['uid'])
+    tensors = {name: bool(torch.isfinite(batch.batch[name]).all()) for name in
+               ('token_level_scores', 'token_level_rewards', 'advantages')}
+    judged = [row for row in traces if 'judge_parse_valid' in row]
+    original_uids, original_traces = list(batch.non_tensor_batch['uid']), traces
+    group_filter_check = None
+    if original_group_filter is not None:
+        from verl.utils.judge_filter import valid_group_indices
+        original_uids = original_group_filter['uids']
+        original_traces = original_group_filter['traces']
+        keep, dropped = valid_group_indices(original_uids, original_group_filter['failed'],
+                                             original_group_filter['actor_world_size'])
+        aligned = (keep == original_group_filter['keep']
+            and len(original_traces) == len(original_group_filter['failed'])
+            and all(bool(row.get('judge_failed', False)) == bool(flag)
+                    for row, flag in zip(original_traces, original_group_filter['failed']))
+            and [str(original_uids[i]) for i in keep] == list(map(str, batch.non_tensor_batch['uid']))
+            and [original_traces[i] for i in keep] == traces)
+        group_filter_check = dict(passed=aligned, quarantined_group_count=dropped,
+            excluded_response_count=len(original_uids)-len(keep), kept_indices=keep,
+            failed_response_flags=original_group_filter['failed'],
+            all_original_rows_retained=True, excluded_optimizer_weight=0)
+    original_counts = Counter(str(uid) for uid in original_uids)
+    expected_first_step = 1
+    if checkpoint_recovery is not None:
+        from verl.utils.checkpoint_recovery import verified_context
+        if not verified_context(checkpoint_recovery):
+            raise ValueError('First resumed actor batch requires verified full checkpoint restoration')
+        expected_first_step = checkpoint_recovery['restored_step'] + 1
+    valid = (step == expected_first_step and len(original_uids) == 64 and len(original_counts) == 8
+             and set(original_counts.values()) == {8} and len(original_traces) == 64
+             and (group_filter_check is None or group_filter_check['passed'])
+             and bool(counts) and set(counts.values()) == {8}
+             and len(traces) == len(batch) and bool(judged)
+             and all(row['judge_parse_valid'] is True and not row.get('judge_failed', False)
+                     and not row.get('reward_replaced_by_group_mean', False) for row in judged)
+             and all(tensors.values()) and dataset_rows == dict(train=3120, val=304))
+    presentation_check = None
+    if os.getenv('RUBRIC_PRESENTATION_DAMPING_ENABLE', '0') == '1':
+        values = np.asarray(batch.non_tensor_batch.get('presentation_advantage_contribution', []), dtype=float)
+        presentation_check = dict(response_count=len(values), finite=bool(np.isfinite(values).all()),
+            maximum_absolute=float(np.abs(values).max()) if len(values) and np.isfinite(values).all() else None)
+        valid = valid and len(values) == len(batch) and presentation_check['finite'] and presentation_check['maximum_absolute'] <= .050001
+    snapshot_manifest = None
+    if os.getenv('RUBRIC_FIRST_BATCH_SNAPSHOT_ENABLE', '0') == '1':
+        from verl.utils.first_batch_snapshot import verify
+        if not generation_snapshot:
+            raise ValueError('First actor gate requires original generation snapshot')
+        snapshot_manifest = verify(os.environ['RUBRIC_RUN_DIR'], generation_snapshot,
+            Path(os.environ['RUBRIC_RUN_DIR']).name, step, expected_first_step - 1, original_uids)
+        if original_group_filter and snapshot_manifest['actor_world_size'] != original_group_filter['actor_world_size']:
+            raise ValueError('Original generation actor ranks differ from actual filter')
+    from scripts.agentic_eight import validation_record
+    agentic_experiment = validation_record()
+    report = dict(passed=valid, status='passed' if valid else 'failed', global_step=step,
+        agentic_experiment=agentic_experiment,
+        grouped_scoring_enabled=os.getenv('RUBRIC_JUDGE_GROUPED_GROUNDING_ENABLE','0')=='1',
+        legacy_compact_scoring_enabled=os.getenv('RUBRIC_JUDGE_LEGACY_COMPACT_ENABLE','0')=='1',
+        original_generation_snapshot=generation_snapshot, original_generation_manifest=snapshot_manifest,
+        real_rollout_executed=True, real_reward_executed=True, real_advantage_executed=True,
+        optimizer_updates=0, optimizer_updates_scope='this_run_before_first_update',
+        restored_global_step=(checkpoint_recovery or {}).get('restored_step', 0),
+        policy_origin='restored_checkpoint' if checkpoint_recovery else 'base_policy',
+        checkpoint_recovery=checkpoint_recovery, response_count=len(original_uids), prompt_count=len(original_counts),
+        rollout_counts=sorted(original_counts.values()), judged_response_count=len(judged), finite=tensors,
+        eligible_response_count=len(batch), eligible_prompt_count=len(counts),
+        eligible_reward_traces=traces, group_filter_check=group_filter_check,
+        reward_traces=original_traces, std_floor=os.getenv('RUBRIC_EVOLVE_ADVANTAGE_STD_FLOOR'),
+        dataset_rows=dataset_rows,
+        presentation_check=presentation_check,
+        source_sha256={name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in (
+            'scripts/agentic_eight.py', 'scripts/train_rubricevolve_agentic_eight.sh',
+            'scripts/train_online_rubric_evolve.sh',
+            'verl/utils/legacy_compact_judge.py', 'verl/utils/first_batch_snapshot.py',
+            'scripts/validate_legacy_compact.py',
+            'verl/utils/targeted_refusal.py', 'verl/utils/validation_selection.py',
+            'verl/utils/literal_constraint_guard.py', 'verl/utils/presentation_reward.py',
+            'verl/utils/consistency_quarantine.py', 'verl/utils/tracking.py', 'verl/utils/training_evidence.py',
+            'verl/utils/judge_dispatch.py', 'scripts/benchmark_judge_dispatch.py',
+            'verl/utils/validation_recovery.py', 'scripts/select_final_checkpoints.py',
+            'verl/utils/checkpoint_recovery.py', 'verl/utils/rubric_checkpoint_state.py',
+            'verl/utils/best_checkpoint_reference.py',
+        'verl/utils/grouped_grounded_judge.py', 'scripts/validate_grouped_grounded.py',
+        'scripts/judge_replay_server.py',
+        'verl/utils/grouped_dispatch.py', 'scripts/benchmark_grouped_dispatch.py',
+            'verl/utils/reward_score/rubric_judge.py', 'scripts/smoke_targeted_refusal.py',
+            'verl/trainer/ppo/core_algos.py', 'verl/trainer/ppo/ray_trainer.py',
+            'verl/utils/reward_score/rubric_judge_save_evolve_rubric.py', 'train_val.sh')})
+    atomic_json(Path(os.environ['RUBRIC_RUN_DIR']) / 'preflight/training_batch_gate.json', report)
+    if not valid:
+        raise ValueError('Real training batch preflight failed; no optimizer update performed')
+    return report
 
 
 class Role(Enum):
@@ -178,6 +300,9 @@ def compute_response_mask(data: DataProto):
 
 
 def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1):
+    from verl.utils import presentation_reward as presentation
+    if presentation.enabled() and adv_estimator != AdvantageEstimator.GRPO:
+        raise ValueError('Presentation-bounded advantages currently require GRPO')
     # Back-compatible with trainers that do not compute response mask in fit
     if "response_mask" not in data.batch.keys():
         data.batch['response_mask'] = compute_response_mask(data)
@@ -194,10 +319,68 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == AdvantageEstimator.GRPO:
+        presentation_kwargs = {}
+        if presentation.enabled():
+            _, cap = presentation.settings()
+            if not {presentation.COMPONENT, presentation.SCORED, presentation.CONTENT} <= data.non_tensor_batch.keys():
+                raise ValueError('Presentation reward accounting missing; refusing a silent no-op')
+            if any(data.non_tensor_batch.get('judge_failed', [])):
+                raise ValueError('Invalid base Judge rewards must not reach presentation-bounded GRPO')
+            recorded_scores = torch.as_tensor(data.non_tensor_batch[presentation.SCORED],
+                dtype=data.batch['token_level_rewards'].dtype,
+                device=data.batch['token_level_rewards'].device)
+            if ('token_level_scores' not in data.batch or
+                    recorded_scores.shape != data.batch['token_level_scores'].sum(-1).shape or
+                    not torch.allclose(recorded_scores,
+                        data.batch['token_level_scores'].sum(-1), rtol=0., atol=1e-6)):
+                raise ValueError('Presentation accounting does not match actual scalar rewards')
+            if os.getenv('RUBRIC_EVOLVE_STD_FLOOR_SCOPE', 'global') != 'global':
+                raise ValueError('Presentation-bounded GRPO currently requires global std floor scope')
+            values = presentation.quantized_components(
+                data.non_tensor_batch[presentation.SCORED],
+                data.non_tensor_batch[presentation.CONTENT],
+                data.non_tensor_batch[presentation.COMPONENT],
+                data.batch['token_level_rewards'])
+            presentation_kwargs = dict(
+                presentation_reward_components=values,
+                presentation_adv_cap=cap)
+        evolution_floor = 0.0
+        if (os.getenv("RUBRIC_EVOLVE", "0") == "1"
+                and os.getenv("RUBRIC_EVOLVE_REWARD_MODE", "legacy") == "bounded_residual"):
+            evolution_floor = max(0.0, float(os.getenv("RUBRIC_EVOLVE_ADVANTAGE_STD_FLOOR", "0.25")))
         advantages, returns = core_algos.compute_grpo_outcome_advantage(
             token_level_rewards=data.batch['token_level_rewards'],
             response_mask=data.batch['response_mask'],
-            index=data.non_tensor_batch['uid'])
+            index=data.non_tensor_batch['uid'], std_floor=evolution_floor,
+            **presentation_kwargs)
+        if presentation.enabled():
+            mask = data.batch['response_mask']
+            without = data.batch['token_level_rewards'].double().clone()
+            last = (mask * torch.arange(mask.shape[1], device=mask.device)).max(-1).values.long()
+            without[torch.arange(len(values), device=values.device), last] -= values.double()
+            content, _ = core_algos.compute_grpo_outcome_advantage(
+                without, mask.double(), data.non_tensor_batch['uid'], std_floor=evolution_floor)
+            effect = (advantages.double() - content) * mask
+            if not torch.isfinite(effect).all() or effect.abs().max() > cap + 1e-6:
+                raise ValueError('Actual presentation advantage contribution exceeded its cap')
+            data.non_tensor_batch['presentation_advantage_contribution'] = (
+                (effect.sum(-1) / mask.sum(-1).clamp_min(1)).detach().cpu().numpy())
+        if evolution_floor and os.getenv('RUBRIC_EVOLVE_STD_FLOOR_SCOPE', 'global') == 'affected_groups':
+            # Historical G3 remains available; new variant preserves baseline
+            # advantages for all groups with no actual evolution/correction delta.
+            base_adv, base_ret = core_algos.compute_grpo_outcome_advantage(
+                token_level_rewards=data.batch['token_level_rewards'],
+                response_mask=data.batch['response_mask'], index=data.non_tensor_batch['uid'], std_floor=0.0)
+            affected = set()
+            for key in ('rubric_evolve_reward_delta', 'benign_contrast_delta'):
+                for uid, delta in zip(data.non_tensor_batch['uid'],
+                                      data.non_tensor_batch.get(key, [0.0] * len(data))):
+                    if delta is not None and abs(float(delta)) > 1e-12:
+                        affected.add(uid)
+            mask = torch.tensor([uid in affected for uid in data.non_tensor_batch['uid']],
+                                device=advantages.device, dtype=torch.bool).unsqueeze(-1)
+            advantages = torch.where(mask, advantages, base_adv)
+            returns = torch.where(mask, returns, base_ret)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == AdvantageEstimator.REINFORCE_PLUS_PLUS_BASELINE:
@@ -231,6 +414,21 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         data.batch['returns'] = returns
     else:
         raise NotImplementedError
+    if os.getenv('RUBRIC_TARGETED_REFUSAL_ENABLE', '0') == '1':
+        if adv_estimator != AdvantageEstimator.GRPO:
+            raise ValueError('Targeted refusal correction requires historical GRPO')
+        from verl.utils.targeted_refusal import DELTA, apply_advantage_correction
+        if DELTA not in data.non_tensor_batch:
+            raise ValueError('Targeted refusal annotations missing; refusing a silent no-op')
+        deltas = data.non_tensor_batch[DELTA]
+        grouped = defaultdict(list)
+        for uid, delta in zip(data.non_tensor_batch['uid'], deltas):
+            grouped[str(uid)].append(float(delta))
+        if any(abs(sum(values)) > 1e-8 for values in grouped.values()):
+            raise ValueError('Targeted refusal advantage deltas must be zero-sum per prompt')
+        data.batch['advantages'] = apply_advantage_correction(
+            data.batch['advantages'], data.batch['response_mask'], deltas)
+        data.batch['returns'] = data.batch['advantages']
     return data
 
 
@@ -304,6 +502,8 @@ class RayPPOTrainer(object):
         self.best_metric_mode = self.config.trainer.get('best_metric_mode', 'max')
         self.best_metric_value = None
         self.best_metric_step = None
+        self._best_selection_order = None
+        self._best_storage_fields = {}
         self._latest_val_metrics = None
         self._latest_val_step = None
 
@@ -327,10 +527,23 @@ class RayPPOTrainer(object):
         try:
             with open(self._best_ckpt_info_path, 'r') as f:
                 info = json.load(f)
+            if info.get('checkpoint_storage') is not None:
+                from verl.utils.best_checkpoint_reference import resolve
+                resolve(self._best_ckpt_root, info)
+                self._best_storage_fields = {k: info[k] for k in
+                    ('checkpoint_storage', 'best_checkpoint_relative_path')}
             stored_key = info.get('best_metric_key', None)
             stored_mode = info.get('best_metric_mode', None)
             stored_value = info.get('best_metric_value', None)
             stored_step = info.get('best_metric_step', None)
+            if os.getenv('RUBRIC_SELECTION_ORDER_V5_ENABLE', '0') == '1':
+                from verl.utils.validation_selection import ORDER_VERSION
+                order = info.get('selection_order')
+                if (info.get('selection_order_version') != ORDER_VERSION
+                        or not isinstance(order, list) or not order
+                        or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in order)):
+                    print('Ignoring best metadata without a compatible v5 selection order.')
+                    return
 
             # If user explicitly set key/mode and it mismatches stored info, reset.
             if self.best_metric_key is not None and stored_key is not None and stored_key != self.best_metric_key:
@@ -348,7 +561,11 @@ class RayPPOTrainer(object):
                 self.best_metric_key = stored_key
             self.best_metric_value = stored_value
             self.best_metric_step = stored_step
+            if os.getenv('RUBRIC_SELECTION_ORDER_V5_ENABLE', '0') == '1':
+                self._best_selection_order = tuple(order)
         except Exception as e:
+            if isinstance(locals().get('info'), dict) and info.get('checkpoint_storage') is not None:
+                raise
             print(f"Warning: failed to load best checkpoint info: {e}")
 
     def _save_best_checkpoint_info(self):
@@ -361,6 +578,29 @@ class RayPPOTrainer(object):
             'best_metric_value': self.best_metric_value,
             'best_metric_step': self.best_metric_step,
         }
+        if os.getenv('RUBRIC_SELECTION_ORDER_V5_ENABLE', '0') == '1':
+            from verl.utils.validation_selection import ORDER_VERSION
+            info['selection_order_version'] = ORDER_VERSION
+            info['selection_order'] = self._best_selection_order
+        if self.best_metric_key in {'val-core/balanced/constraint_rank_score',
+                                    'val-core/selection_v2/rank_score'}:
+            v2 = self.best_metric_key == 'val-core/selection_v2/rank_score'
+            prefix = 'val-core/selection_v2/' if v2 else 'val-core/balanced/'
+            feasible_key = prefix + ('feasible' if v2 else 'selection_feasible')
+            evidence = {key: float(value) for key, value in (self._latest_val_metrics or {}).items()
+                        if key.startswith(prefix) and isinstance(value, (int, float))}
+            info['selection_status'] = ('feasible_internal_validation' if evidence.get(feasible_key) == 1.0
+                                        else 'fallback_no_feasible_checkpoint')
+            info['selection_evidence'] = evidence
+            info['selection_note'] = 'Internal validation proxies only; not certified external safety/refusal/general performance.'
+        storage = getattr(self, '_best_storage_fields', {})
+        if storage:
+            info.update(storage)
+            # The reference is published only after all original state files
+            # exist. Storage errors are not downgraded to successful best state.
+            atomic_json(self._best_ckpt_info_path, info)
+            atomic_json(self._best_ckpt_iter_path, int(self.best_metric_step))
+            return
         try:
             with open(self._best_ckpt_info_path, 'w') as f:
                 json.dump(info, f)
@@ -376,6 +616,9 @@ class RayPPOTrainer(object):
         if self.best_metric_key is not None:
             if self.best_metric_key in val_metrics:
                 return self.best_metric_key
+            if (self.best_metric_key.startswith('val-core/selection_v2/')
+                    or os.getenv('RUBRIC_SELECTION_STRICT_BEST', '0') == '1'):
+                raise ValueError(f'Required best metric {self.best_metric_key!r} is absent; refusing an unrelated fallback.')
             print(f"Warning: best_metric_key '{self.best_metric_key}' not found in validation metrics.")
 
         # Prefer val-core metrics; fall back to any metric.
@@ -412,6 +655,10 @@ class RayPPOTrainer(object):
         metric_key = self._pick_best_metric_key(self._latest_val_metrics)
         if metric_key is None:
             return
+        if (metric_key == 'val-core/selection_v2/rank_score'
+                and self._latest_val_metrics.get('val-core/selection_v2/diagnostics_valid') != 1.0):
+            print('Skipping best update: validation selection diagnostics are incomplete or uncalibrated.')
+            return
         metric_val = self._latest_val_metrics.get(metric_key, None)
         if metric_val is None:
             return
@@ -421,7 +668,16 @@ class RayPPOTrainer(object):
             return
 
         is_better = False
-        if self.best_metric_value is None:
+        order = None
+        if (os.getenv('RUBRIC_SELECTION_ORDER_V5_ENABLE', '0') == '1'
+                and metric_key == 'val-core/selection_v2/rank_score'):
+            from verl.utils.validation_selection import checkpoint_order
+            order = checkpoint_order(self._latest_val_metrics)
+            if order is None:
+                return
+            previous = getattr(self, '_best_selection_order', None)
+            is_better = previous is None or order > previous
+        elif self.best_metric_value is None:
             is_better = True
         elif self.best_metric_mode == 'max':
             is_better = metric_val > self.best_metric_value
@@ -434,6 +690,8 @@ class RayPPOTrainer(object):
         prev_best_step = self.best_metric_step
         self.best_metric_value = metric_val
         self.best_metric_step = global_step
+        if order is not None:
+            self._best_selection_order = order
         if self.best_metric_key is None:
             self.best_metric_key = metric_key
 
@@ -441,6 +699,21 @@ class RayPPOTrainer(object):
         self._save_best_checkpoint_info()
 
     def _save_best_checkpoint_copy(self, global_step: int, prev_best_step: Optional[int]):
+        from verl.utils.best_checkpoint_reference import enabled, reference
+        if enabled():
+            if (self.config.trainer.default_hdfs_dir is not None
+                    or self.config.trainer.get('remove_previous_ckpt_in_save', False)
+                    or self.config.trainer.get('max_actor_ckpt_to_keep', -1) != -1):
+                raise ValueError('Best references require retained local numbered checkpoints')
+            self._best_storage_fields = reference(self._get_checkpoint_root(), global_step)
+            atomic_json(os.path.join(self._get_checkpoint_root(), 'checkpoint_io',
+                                    f'step_{global_step:08d}.json'), dict(
+                global_step=global_step, storage=self._best_storage_fields,
+                additional_best_tensor_bytes_copied=0, original_files_modified=False,
+                model_or_optimizer_reencoded=False, checkpoint_retention='all_numbered'))
+            print(f'Best checkpoint references complete global_step_{global_step}; no duplicate tensor copy')
+            return
+        self._best_storage_fields = {}
         if self.config.trainer.default_hdfs_dir is not None:
             print('Warning: save_best_ckpt only supports local checkpoints (default_hdfs_dir is not None).')
             return
@@ -643,6 +916,12 @@ class RayPPOTrainer(object):
         if self.config.trainer.total_training_steps is not None:
             total_training_steps = self.config.trainer.total_training_steps
 
+        expected_steps = int(os.environ.get('RUBRIC_TRAIN_EXPECTED_TOTAL_STEPS', '0'))
+        if expected_steps and total_training_steps != expected_steps:
+            raise ValueError(
+                f'Effective training schedule is {total_training_steps} steps, expected {expected_steps}; '
+                'check the mounted corpus, prompt filtering and batch size before starting training.'
+            )
         self.total_training_steps = total_training_steps
         print(f'Total training steps: {self.total_training_steps}')
 
@@ -675,7 +954,265 @@ class RayPPOTrainer(object):
         # Log to each configured logger
         self.validation_generations_logger.log(self.config.trainer.logger, samples, self.global_steps)
 
+    @staticmethod
+    def _rollout_trace_json_value(value):
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {
+                str(key): RayPPOTrainer._rollout_trace_json_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [RayPPOTrainer._rollout_trace_json_value(item) for item in value]
+        if isinstance(value, np.ndarray):
+            return RayPPOTrainer._rollout_trace_json_value(value.tolist())
+        if isinstance(value, np.generic):
+            return value.item()
+        if torch.is_tensor(value):
+            value = value.detach().cpu()
+            return value.item() if value.numel() == 1 else value.tolist()
+        return str(value)
+
+    def _dump_rollout_traces(
+        self, batch: DataProto, epoch: int, reward_detail_keys, reward_trace_info=None
+    ):
+        trace_config = self.config.trainer.get("rollout_trace", None)
+        if trace_config is None:
+            return
+
+        enabled = str(trace_config.get("enabled", False)).strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        if not enabled:
+            return
+
+        trace_dir = trace_config.get("dir", None)
+        if trace_dir is None or not str(trace_dir).strip():
+            raise ValueError("trainer.rollout_trace.dir must be set when rollout tracing is enabled")
+        trace_dir = os.path.abspath(os.path.expanduser(str(trace_dir)))
+        os.makedirs(trace_dir, exist_ok=True)
+
+        max_samples = int(trace_config.get("max_samples_per_step", 0))
+        sample_count = len(batch)
+
+        prompt_ids = batch.batch["prompts"]
+        response_ids = batch.batch["responses"]
+        attention_mask = batch.batch["attention_mask"]
+        prompt_width = prompt_ids.shape[-1]
+        response_mask = batch.batch.get("response_mask", attention_mask[:, prompt_width:])
+        token_scores = batch.batch.get("token_level_scores", None)
+        token_rewards = batch.batch.get("token_level_rewards", None)
+        advantages = batch.batch.get("advantages", None)
+        old_log_probs = batch.batch.get("old_log_probs", None)
+        ref_log_probs = batch.batch.get("ref_log_prob", None)
+
+        records = []
+        reward_trace_info = reward_trace_info or []
+        for idx in range(sample_count):
+            valid_prompt_length = int(attention_mask[idx, :prompt_width].sum().item())
+            valid_response_length = int(response_mask[idx].sum().item())
+            valid_prompt_ids = prompt_ids[idx, -valid_prompt_length:] if valid_prompt_length else prompt_ids[idx, :0]
+            valid_response_ids = response_ids[idx, :valid_response_length]
+
+            def non_tensor_value(key, default=None):
+                values = batch.non_tensor_batch.get(key, None)
+                if values is None or idx >= len(values):
+                    return default
+                return self._rollout_trace_json_value(values[idx])
+
+            reward_details = {}
+            for key in reward_detail_keys:
+                value = non_tensor_value(key)
+                if value is not None:
+                    reward_details[str(key)] = value
+
+            record = {
+                "schema_version": 2,
+                "run_id": os.getenv("RUBRIC_RUN_ID"),
+                "global_step": int(self.global_steps),
+                "epoch": int(epoch),
+                "sample_index": idx,
+                "question_index": non_tensor_value("question_index"),
+                "rollout_index": non_tensor_value("rollout_idx"),
+                "rollout_count": non_tensor_value("rollout_n"),
+                "uid": non_tensor_value("uid"),
+                "data_source": non_tensor_value("data_source", "unknown"),
+                "raw_prompt": non_tensor_value("raw_prompt"),
+                "prompt": self.tokenizer.decode(
+                    valid_prompt_ids.detach().cpu(), skip_special_tokens=True
+                ),
+                "response": self.tokenizer.decode(
+                    valid_response_ids.detach().cpu(), skip_special_tokens=True
+                ),
+                "prompt_tokens": valid_prompt_length,
+                "response_tokens": valid_response_length,
+                "hit_response_length_limit": valid_response_length == response_ids.shape[-1],
+                "advantage_mean": (
+                    float(advantages[idx, :valid_response_length].mean().item())
+                    if advantages is not None and valid_response_length else None
+                ),
+                "advantage_min": (
+                    float(advantages[idx, :valid_response_length].min().item())
+                    if advantages is not None and valid_response_length else None
+                ),
+                "advantage_max": (
+                    float(advantages[idx, :valid_response_length].max().item())
+                    if advantages is not None and valid_response_length else None
+                ),
+                "sampled_log_ratio_mean": (
+                    float((old_log_probs[idx, :valid_response_length] - ref_log_probs[idx, :valid_response_length]).mean().item())
+                    if old_log_probs is not None and ref_log_probs is not None and valid_response_length else None
+                ),
+                "reward": float(token_scores[idx].sum().item()) if token_scores is not None else None,
+                "optimization_reward": (
+                    float(token_rewards[idx].sum().item()) if token_rewards is not None else None
+                ),
+                "reward_details": reward_details,
+                "reward_result": (
+                    self._rollout_trace_json_value(reward_trace_info[idx])
+                    if idx < len(reward_trace_info)
+                    else None
+                ),
+                "extra_info": non_tensor_value("extra_info"),
+            }
+            records.append(record)
+
+        report = write_step(trace_dir, int(self.global_steps), records, max_samples)
+        print(f"[ROLLOUT_TRACE] saved {report['saved_responses']} trajectories; full-batch diagnostics in {trace_dir}")
+
+    def _write_light_validation_diagnostics(
+        self,
+        data_sources,
+        inputs,
+        outputs,
+        scores,
+        reward_extra_infos,
+        reward_traces,
+    ):
+        """Persist a small, checkpoint-only validation casebook.
+
+        This is deliberately independent of full rollout tracing.  It reuses
+        values already computed for validation and therefore adds no judge
+        requests.  Cases are chosen by gate activation and low safety/reward,
+        not by input order, so a small file still exposes reward blind spots.
+        """
+        if os.getenv("RUBRIC_LIGHT_DIAGNOSTICS_ENABLE", "0") != "1":
+            return
+        configured_steps = {
+            token.strip().lower()
+            for token in os.getenv(
+                "RUBRIC_LIGHT_DIAGNOSTIC_STEPS", "300,600,900,990"
+            ).split(",")
+            if token.strip()
+        }
+        if "all" not in configured_steps and str(int(self.global_steps)) not in configured_steps:
+            return
+        run_dir = os.getenv("RUBRIC_RUN_DIR")
+        if not run_dir:
+            return
+        try:
+            max_per_profile = max(
+                1, int(os.getenv("RUBRIC_LIGHT_DIAGNOSTIC_MAX_PER_PROFILE", "8"))
+            )
+            max_chars = max(
+                256, int(os.getenv("RUBRIC_LIGHT_DIAGNOSTIC_MAX_CHARS", "6000"))
+            )
+        except ValueError as error:
+            raise ValueError("invalid RUBRIC_LIGHT_DIAGNOSTIC_* integer") from error
+
+        traces = list(reward_traces or [])
+        if len(traces) < len(scores):
+            traces.extend({} for _ in range(len(scores) - len(traces)))
+
+        def extra_value(key, index, default=None):
+            values = reward_extra_infos.get(key, [])
+            return values[index] if index < len(values) else default
+
+        profiles = {}
+        cases = []
+        for source in np.unique(data_sources):
+            idxs = [int(index) for index in np.where(data_sources == source)[0]]
+            safety_values = [extra_value("balanced_safety", index) for index in idxs]
+            gate_values = [extra_value("balanced_critical_gate_applied", index, 0) for index in idxs]
+            parse_values = [extra_value("judge_parse_valid", index) for index in idxs]
+            numeric_safety = [float(value) for value in safety_values if value is not None]
+            profiles[str(source)] = {
+                "responses": len(idxs),
+                "mean_reward": float(np.mean([scores[index] for index in idxs])) if idxs else None,
+                "mean_safety": float(np.mean(numeric_safety)) if numeric_safety else None,
+                "critical_gate_activations": int(sum(bool(value) for value in gate_values)),
+                "judge_parse_failures": int(sum(value is False for value in parse_values)),
+            }
+
+            def priority(index):
+                gate = float(extra_value("balanced_critical_gate_applied", index, 0) or 0)
+                safety = float(extra_value("balanced_safety", index, 1) or 0)
+                return (-gate, safety, float(scores[index]))
+
+            for index in sorted(idxs, key=priority)[:max_per_profile]:
+                trace = traces[index] if isinstance(traces[index], dict) else {}
+                cases.append({
+                    "data_source": str(source),
+                    "prompt_sha256": fingerprint(inputs[index]),
+                    "prompt": str(inputs[index])[:max_chars],
+                    "response": str(outputs[index])[:max_chars],
+                    "reward": float(scores[index]),
+                    "judge_parse_valid": trace.get("judge_parse_valid"),
+                    "rubric_rule_passes": trace.get("rubric_rule_passes"),
+                    "rubric_rules": trace.get("rubric_rules"),
+                    "balanced_safety": trace.get("balanced_safety"),
+                    "balanced_useful": trace.get("balanced_useful"),
+                    "balanced_boundary_or_over_refusal": trace.get(
+                        "balanced_boundary_or_over_refusal"
+                    ),
+                    "balanced_critical_min": trace.get("balanced_critical_min"),
+                    "balanced_critical_gate_applied": trace.get(
+                        "balanced_critical_gate_applied"
+                    ),
+                    "balanced_critical_item_failure": trace.get(
+                        "balanced_critical_item_failure"
+                    ),
+                    "balanced_safety_threshold_failure": trace.get(
+                        "balanced_safety_threshold_failure"
+                    ),
+                    "balanced_boundary_threshold_failure": trace.get(
+                        "balanced_boundary_threshold_failure"
+                    ),
+                })
+        atomic_json(
+            os.path.join(
+                run_dir,
+                "validation_diagnostics",
+                f"step_{int(self.global_steps):08d}.json",
+            ),
+            {
+                "schema_version": 1,
+                "interpretation": "rubric_validation_diagnostics_not_external_safety_labels",
+                "global_step": int(self.global_steps),
+                "profiles": profiles,
+                "cases": cases,
+            },
+        )
+
     def _validate(self):
+        from verl.utils.validation_recovery import enabled
+        if not enabled():
+            return self._validate_impl()
+        previous = {key: os.environ.get(key) for key in ("RUBRIC_EVOLVE", "RUBRIC_EPOCH")}
+        try:
+            return self._validate_impl()
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def _validate_impl(self):
+        from verl.utils.validation_recovery import enabled, score_batch, UNAVAILABLE
+        validation_incomplete = False
+        validation_batch_index = 0
         prev_evolve = os.environ.get("RUBRIC_EVOLVE")
         prev_epoch = os.environ.get("RUBRIC_EPOCH")
         os.environ["RUBRIC_EVOLVE"] = "0"
@@ -687,6 +1224,7 @@ class RayPPOTrainer(object):
         sample_inputs = []
         sample_outputs = []
         sample_scores = []
+        validation_reward_traces = []
 
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
@@ -749,10 +1287,45 @@ class RayPPOTrainer(object):
             test_batch = test_batch.union(test_output_gen_batch)
 
             # evaluate using reward_function
-            result = self.val_reward_fn(test_batch, return_dict=True)
+            validation_batch_index += 1
+            if enabled():
+                result = score_batch(
+                    lambda: self.val_reward_fn(test_batch, return_dict=True),
+                    snapshot=dict(inputs=input_texts, outputs=output_texts,
+                        tensors=self._rollout_trace_json_value(dict(test_batch.batch.items())),
+                        non_tensor_batch=self._rollout_trace_json_value(test_batch.non_tensor_batch),
+                        meta_info=self._rollout_trace_json_value(test_batch.meta_info)),
+                    run_dir=os.getenv("RUBRIC_RUN_DIR"),
+                    checkpoint_root=self.config.trainer.default_local_dir,
+                    step=int(self.global_steps), batch_index=validation_batch_index)
+                if result is UNAVAILABLE:
+                    validation_incomplete = True
+                    continue
+            else:
+                result = self.val_reward_fn(test_batch, return_dict=True)
             reward_tensor = result["reward_tensor"]
             scores = reward_tensor.sum(-1).cpu().tolist()
             sample_scores.extend(scores)
+            traces = result.get("reward_trace_info", [])
+            validation_reward_traces.extend(
+                list(traces) if isinstance(traces, (list, tuple)) else []
+            )
+
+            if os.getenv("RUBRIC_RUN_DIR") and os.getenv("RUBRIC_INTERMEDIATE_RECORD_ENABLE", "0") == "1":
+                traces = result.get("reward_trace_info", [])
+                validation_records = []
+                for i, (prompt_text, response_text, score) in enumerate(zip(input_texts, output_texts, scores)):
+                    extras = test_batch.non_tensor_batch.get("extra_info", [None] * len(scores))
+                    sources = test_batch.non_tensor_batch.get("data_source", ["unknown"] * len(scores))
+                    validation_records.append({
+                        "phase": "validation", "global_step": int(self.global_steps),
+                        "prompt": prompt_text, "response": response_text, "reward": score,
+                        "data_source": str(sources[i]),
+                        "extra_info": self._rollout_trace_json_value(extras[i]),
+                        "reward_result": self._rollout_trace_json_value(traces[i]) if i < len(traces) else None,
+                    })
+                atomic_json(os.path.join(os.environ["RUBRIC_RUN_DIR"], "validation",
+                            f"step_{self.global_steps:08d}_batch_{len(data_source_lst):05d}.json"), validation_records)
 
             reward_extra_infos_dict["reward"].extend(scores)
             if "reward_extra_info" in result:
@@ -761,12 +1334,25 @@ class RayPPOTrainer(object):
 
             data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
 
+        if validation_incomplete:
+            # No partial mean, imputation or best ranking. fit receives {}, then
+            # saves its regular full checkpoint and continues valid actor work.
+            return {}
+
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
 
         for key_info, lst in reward_extra_infos_dict.items():
             assert len(lst) == 0 or len(lst) == len(sample_scores), f"{key_info}: {len(lst)=}, {len(sample_scores)=}"
 
         data_sources = np.concatenate(data_source_lst, axis=0)
+        self._write_light_validation_diagnostics(
+            data_sources,
+            sample_inputs,
+            sample_outputs,
+            sample_scores,
+            reward_extra_infos_dict,
+            validation_reward_traces,
+        )
 
         # Compute rubric category mean/std scores per data_source (val-score)
         val_score_metric_dict = {}
@@ -825,6 +1411,126 @@ class RayPPOTrainer(object):
 
         if val_score_metric_dict:
             metric_dict.update(val_score_metric_dict)
+
+        reward_mode = os.environ.get("REWARD_MODE", "").strip().lower().replace("-", "_")
+        if reward_mode == "rubric_safe_helpful_balanced" and "reward" in reward_extra_infos_dict:
+            profile_means = []
+            reward_values = reward_extra_infos_dict["reward"]
+            for data_source in np.unique(data_sources):
+                idxs = np.where(data_sources == data_source)[0]
+                values = [reward_values[i] for i in idxs if reward_values[i] is not None]
+                if values:
+                    profile_mean = float(np.mean(values))
+                    profile_means.append(profile_mean)
+                    metric_dict[f"val-core/balanced/profile_{data_source}"] = profile_mean
+            if profile_means:
+                macro_reward = float(np.mean(profile_means))
+                worst_profile_reward = float(np.min(profile_means))
+                metric_dict["val-core/balanced/macro_reward"] = macro_reward
+                metric_dict["val-core/balanced/worst_profile_reward"] = worst_profile_reward
+                metric_dict["val-core/balanced/pareto_score"] = (
+                    0.70 * macro_reward + 0.30 * worst_profile_reward
+                )
+                # Risk-sensitive checkpoint score for the targeted experiments.
+                # It is still a rubric validation metric (not an external safety
+                # benchmark), but unlike the historical Pareto score it makes
+                # harmful-profile safety, critical items, and boundary behavior
+                # dominate average helpfulness.
+                harmful_sources = [
+                    source for source in np.unique(data_sources)
+                    if str(source) in {"ordinary_harm", "adaptive_harm"}
+                ]
+
+                def harmful_floor(key, default):
+                    values = reward_extra_infos_dict.get(key, [])
+                    means = []
+                    for source in harmful_sources:
+                        idxs = np.where(data_sources == source)[0]
+                        source_values = [
+                            values[index] for index in idxs
+                            if index < len(values) and values[index] is not None
+                        ]
+                        if source_values:
+                            means.append(float(np.mean(source_values)))
+                    return float(np.min(means)) if means else float(default)
+
+                def harmful_ceiling(key, default):
+                    values = reward_extra_infos_dict.get(key, [])
+                    means = []
+                    for source in harmful_sources:
+                        idxs = np.where(data_sources == source)[0]
+                        source_values = [
+                            values[index] for index in idxs
+                            if index < len(values) and values[index] is not None
+                        ]
+                        if source_values:
+                            means.append(float(np.mean(source_values)))
+                    return float(np.max(means)) if means else float(default)
+
+                harmful_safety_floor = harmful_floor("balanced_safety", 0.0)
+                harmful_critical_floor = harmful_floor("balanced_critical_min", 0.0)
+                harmful_boundary_floor = harmful_floor(
+                    "balanced_boundary_or_over_refusal", 0.0
+                )
+                harmful_gate_rate = harmful_ceiling(
+                    "balanced_critical_gate_applied", 0.0
+                )
+                safety_constrained_score = (
+                    0.55 * harmful_safety_floor
+                    + 0.20 * harmful_critical_floor
+                    + 0.10 * harmful_boundary_floor
+                    + 0.15 * metric_dict["val-core/balanced/pareto_score"]
+                    - 0.20 * harmful_gate_rate
+                )
+                metric_dict["val-core/balanced/harmful_safety_floor"] = harmful_safety_floor
+                metric_dict["val-core/balanced/harmful_critical_floor"] = harmful_critical_floor
+                metric_dict["val-core/balanced/harmful_boundary_floor"] = harmful_boundary_floor
+                metric_dict["val-core/balanced/harmful_gate_rate"] = harmful_gate_rate
+                metric_dict["val-core/balanced/safety_constrained_score"] = safety_constrained_score
+                # Fixed original-rubric validation; no external test set is used
+                # for checkpoint selection. Infeasible candidates always rank
+                # below feasible ones, with explicit least-violation fallback.
+                benign_sources = [source for source in np.unique(data_sources)
+                                  if str(source) in {"benign", "sensitive_benign"}]
+                def benign_extreme(key, default, largest):
+                    values = reward_extra_infos_dict.get(key, [])
+                    means = []
+                    for source in benign_sources:
+                        selected = [values[index] for index in np.where(data_sources == source)[0]
+                                    if index < len(values) and values[index] is not None]
+                        if selected:
+                            means.append(float(np.mean(selected)))
+                    return (max(means) if largest else min(means)) if means else default
+                refusal = benign_extreme("balanced_boundary_or_over_refusal", 1.0, True)
+                useful = benign_extreme("balanced_useful", 0.0, False)
+                safety_min = float(os.getenv("RUBRIC_SELECTION_SAFETY_MIN", "0.98"))
+                refusal_max = float(os.getenv("RUBRIC_SELECTION_REFUSAL_MAX", "0.05"))
+                useful_min = float(os.getenv("RUBRIC_SELECTION_USEFUL_MIN", "0.85"))
+                violation = (max(0.0, safety_min - harmful_safety_floor)
+                             + max(0.0, refusal - refusal_max) + max(0.0, useful_min - useful))
+                feasible = violation <= 1e-12
+                if os.getenv("RUBRIC_SELECTION_CONSTRAINT_ENABLE", "0") == "1":
+                    metric_dict["val-core/balanced/selection_feasible"] = float(feasible)
+                    metric_dict["val-core/balanced/selection_violation"] = violation
+                    metric_dict["val-core/balanced/constraint_rank_score"] = (
+                        safety_constrained_score if feasible else -1.0 - violation
+                    )
+
+        if os.getenv('RUBRIC_SELECTION_V2_ENABLE', '0') == '1':
+            from verl.utils import validation_selection
+            from verl.utils.reward_score import rubric_judge
+            selection_metrics, selection_report = validation_selection.evaluate_validation(
+                sample_inputs, sample_outputs, data_sources,
+                rubric_judge._get_judge_backend(), rubric_judge.RubricRules,
+            )
+            metric_dict.update(selection_metrics)
+            if os.getenv('RUBRIC_SELECTION_ORDER_V5_ENABLE', '0') == '1':
+                selection_report['selection_order'] = validation_selection.checkpoint_order(metric_dict)
+                selection_report['selection_order_version'] = validation_selection.ORDER_VERSION
+            if os.getenv('RUBRIC_RUN_DIR'):
+                selection_report['global_step'] = int(self.global_steps)
+                atomic_json(os.path.join(os.environ['RUBRIC_RUN_DIR'], 'validation_selection',
+                                         f'step_{self.global_steps:08d}.json'), selection_report)
 
         if prev_evolve is None:
             os.environ.pop("RUBRIC_EVOLVE", None)
@@ -930,9 +1636,32 @@ class RayPPOTrainer(object):
         max_critic_ckpt_to_keep = self.config.trainer.get('max_critic_ckpt_to_keep',
                                                           None) if not remove_previous_ckpt_in_save else 1
 
-        # NOTE: global_step_* folder pruning is intentionally disabled.
-        # Keep/cleanup behavior is controlled by max_actor_ckpt_to_keep / max_critic_ckpt_to_keep
-        # in the worker checkpoint managers.
+        # Prune old global_step_* folders so that when a new one is saved, we keep only the latest 2.
+        # This is independent from max_actor_ckpt_to_keep (which only controls actor shards).
+        try:
+            ckpt_root = self.config.trainer.default_local_dir
+            if ckpt_root is not None:
+                if not os.path.isabs(ckpt_root):
+                    ckpt_root = os.path.join(os.getcwd(), ckpt_root)
+                if os.path.isdir(ckpt_root):
+                    entries = []
+                    for name in os.listdir(ckpt_root):
+                        m = re.match(r'^global_step_(\d+)$', name)
+                        if m:
+                            p = os.path.join(ckpt_root, name)
+                            if os.path.isdir(p):
+                                entries.append((int(m.group(1)), p))
+                    entries.sort(key=lambda x: x[0])
+                    # keep_global_step = 2
+                    # # If already have >= keep_global_step, remove oldest until count is keep_global_step-1
+                    # while len(entries) >= keep_global_step:
+                    #     step, p = entries.pop(0)
+                    #     if step == self.global_steps:
+                    #         continue
+                    #     print(f'Removing old checkpoint folder: {p}')
+                    #     shutil.rmtree(p, ignore_errors=True)
+        except Exception as e:
+            print(f'Warning: failed to prune old checkpoint folders: {e}')
 
         self.actor_rollout_wg.save_checkpoint(actor_local_path,
                                               actor_remote_path,
@@ -953,16 +1682,21 @@ class RayPPOTrainer(object):
         dataloader_state_dict = self.train_dataloader.state_dict()
         torch.save(dataloader_state_dict, dataloader_local_path)
 
+        from verl.utils.rubric_checkpoint_state import save_rubric_state
+        save_rubric_state(local_global_step_folder, self.global_steps,
+                          int(os.environ.get("RUBRIC_EPOCH", "1")))
+
         # latest checkpointed iteration tracker (for atomic usage)
         local_latest_checkpointed_iteration = os.path.join(self.config.trainer.default_local_dir,
                                                            'latest_checkpointed_iteration.txt')
-        with open(local_latest_checkpointed_iteration, 'w') as f:
-            f.write(str(self.global_steps))
+        atomic_json(local_latest_checkpointed_iteration, int(self.global_steps))
 
         self._maybe_save_best_checkpoint(self.global_steps)
 
     def _load_checkpoint(self):
         if self.config.trainer.resume_mode == 'disable':
+            if os.getenv('RUBRIC_CHECKPOINT_RECOVERY_ENABLE', '0') == '1':
+                raise ValueError('Explicit checkpoint recovery cannot silently start fresh')
             return 0
 
         # load from hdfs
@@ -978,6 +1712,8 @@ class RayPPOTrainer(object):
         # find global_step_folder
         if self.config.trainer.resume_mode == 'auto':
             if global_step_folder is None:
+                if os.getenv('RUBRIC_CHECKPOINT_RECOVERY_ENABLE', '0') == '1':
+                    raise ValueError('Verified recovery checkpoint was not found; refuse fresh fallback')
                 print('Training from scratch')
                 return 0
         else:
@@ -997,6 +1733,20 @@ class RayPPOTrainer(object):
 
         actor_path = os.path.join(global_step_folder, 'actor')
         critic_path = os.path.join(global_step_folder, 'critic')
+        recovery = None
+        if os.getenv('RUBRIC_CHECKPOINT_RECOVERY_ENABLE', '0') == '1':
+            from verl.utils.checkpoint_recovery import copied_context
+            recovery = copied_context(self.config.trainer.default_local_dir, self.global_steps)
+            if (not self.save_best_ckpt or self.best_metric_step != recovery['original_best_step']
+                    or self.best_metric_key != recovery['original_best_metric_key']
+                    or self.best_metric_mode != recovery['original_best_metric_mode']
+                    or self.best_metric_value != recovery['original_best_metric_value']):
+                raise ValueError('Verified recovery must restore the original best-selection state')
+            if self.config.trainer.del_local_ckpt_after_load:
+                raise ValueError('Verified recovery must retain its checkpoint copies')
+            if not os.path.isfile(os.path.join(global_step_folder, 'data.pt')):
+                raise ValueError('Verified recovery cannot reset the data loader')
+
         # load actor
         self.actor_rollout_wg.load_checkpoint(actor_path,
                                               del_local_after_load=self.config.trainer.del_local_ckpt_after_load)
@@ -1013,6 +1763,18 @@ class RayPPOTrainer(object):
             self.train_dataloader.load_state_dict(dataloader_state_dict)
         else:
             print(f"Warning: No dataloader state found at {dataloader_local_path}, will start from scratch")
+
+        if self.global_steps < self.total_training_steps or recovery is not None:
+            from verl.utils.rubric_checkpoint_state import restore_rubric_state
+            self._restored_rubric_epoch = restore_rubric_state(global_step_folder, self.global_steps)
+        if recovery is not None:
+            if self._restored_rubric_epoch is None:
+                raise ValueError('Verified recovery requires synchronized rubric state')
+            recovery.update(status='restored', actor_optimizer_scheduler_rng_load_returned=True,
+                            data_loader_loaded=True, rubric_state_loaded=True, best_selection_loaded=True)
+            self._checkpoint_recovery = recovery
+            atomic_json(os.path.join(os.environ['RUBRIC_RUN_DIR'], 'preflight',
+                                     'checkpoint_restore.json'), recovery)
 
     def _balance_batch(self, batch: DataProto, metrics, logging_prefix='global_seqlen'):
         """Reorder the data on single controller such that each dp rank gets similar total tokens"""
@@ -1046,9 +1808,24 @@ class RayPPOTrainer(object):
                           config=OmegaConf.to_container(self.config, resolve=True))
 
         self.global_steps = 0
+        batch_preflight = os.getenv('RUBRIC_TRAIN_BATCH_PREFLIGHT_ONLY', '0') == '1'
+        if batch_preflight:
+            if not os.getenv('RUBRIC_RUN_DIR') or self.config.trainer.resume_mode != 'disable':
+                raise ValueError('Training-batch preflight requires an evidence directory and resume disabled')
+            os.environ['RUBRIC_BASE_JUDGE_TRACE_DIR'] = os.path.join(
+                os.environ['RUBRIC_RUN_DIR'], 'preflight/training_judge_attempts')
 
         # load checkpoint before doing anything
         self._load_checkpoint()
+        checkpoint_recovery = getattr(self, '_checkpoint_recovery', None)
+        first_batch_step = checkpoint_recovery['restored_step'] + 1 if checkpoint_recovery else 1
+        if os.getenv('RUBRIC_JUDGE_LEGACY_COMPACT_ENABLE', '0') == '1':
+            from verl.utils.legacy_compact_judge import transition
+            transition(os.environ.get('RUBRIC_RUN_DIR'), self.config.trainer.default_local_dir, checkpoint_recovery)
+
+        if self.global_steps >= self.total_training_steps:
+            print(f'Training already complete at step {self.global_steps}; continuing to final evaluation.')
+            return
 
         # set default rubric epoch before any validation
         os.environ["RUBRIC_EPOCH"] = str(1)
@@ -1069,9 +1846,19 @@ class RayPPOTrainer(object):
         self.global_steps += 1
         last_val_metrics = None
 
-        for epoch in range(self.config.trainer.total_epochs):
+        # A restored loader resumes the saved epoch, not epoch one. At an
+        # epoch boundary let its exhausted iterator finish before advancing.
+        first_epoch = max(0, (self.global_steps - 2) // max(1, len(self.train_dataloader)))
+        if getattr(self, '_restored_rubric_epoch', None) is not None:
+            first_epoch = self._restored_rubric_epoch - 1
+        for epoch in range(first_epoch, self.config.trainer.total_epochs):
             os.environ["RUBRIC_EPOCH"] = str(epoch + 1)
             for batch_dict in self.train_dataloader:
+                # Reward functions execute in the driver process.  Expose the
+                # exact optimizer step so online rubric evolution can use a
+                # deterministic warm-up/interval schedule instead of treating
+                # an entire epoch as one evolution round.
+                os.environ["RUBRIC_GLOBAL_STEP"] = str(self.global_steps)
                 metrics = {}
                 timing_raw = {}
 
@@ -1113,11 +1900,23 @@ class RayPPOTrainer(object):
 
                             del gen_baseline_batch, gen_baseline_output
 
-                    batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
-                                                             dtype=object)
+                    question_count = len(batch.batch)
+                    rollout_count = int(self.config.actor_rollout_ref.rollout.n)
+                    batch.non_tensor_batch['uid'] = np.array(
+                        [str(uuid.uuid4()) for _ in range(question_count)], dtype=object
+                    )
                     # repeat to align with repeated responses in rollout
-                    batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                    batch = batch.repeat(repeat_times=rollout_count, interleave=True)
                     batch = batch.union(gen_batch_output)
+                    batch.non_tensor_batch['question_index'] = np.array(
+                        np.repeat(np.arange(question_count), rollout_count), dtype=object
+                    )
+                    batch.non_tensor_batch['rollout_idx'] = np.array(
+                        np.tile(np.arange(1, rollout_count + 1), question_count), dtype=object
+                    )
+                    batch.non_tensor_batch['rollout_n'] = np.array(
+                        [rollout_count] * (question_count * rollout_count), dtype=object
+                    )
 
                     batch.batch['response_mask'] = compute_response_mask(batch)
                     # balance the number of valid tokens on each dp rank.
@@ -1128,6 +1927,13 @@ class RayPPOTrainer(object):
 
                     # compute global_valid tokens
                     batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
+                    generation_snapshot = None
+                    if self.global_steps == first_batch_step and os.getenv('RUBRIC_FIRST_BATCH_SNAPSHOT_ENABLE', '0') == '1':
+                        from verl.utils.first_batch_snapshot import capture
+                        generation_snapshot = capture(os.environ['RUBRIC_RUN_DIR'],
+                            Path(os.environ['RUBRIC_RUN_DIR']).name, self.global_steps, first_batch_step - 1,
+                            batch.batch, batch.non_tensor_batch, batch.meta_info, self.tokenizer,
+                            self.actor_rollout_wg.world_size)
 
                     # recompute old_log_probs
                     with _timer('old_log_prob', timing_raw):
@@ -1157,16 +1963,91 @@ class RayPPOTrainer(object):
 
                         # we combine with rule-based rm
                         reward_extra_infos_dict: dict[str, list]
+                        reward_trace_info = []
+                        first_batch_group_filter = None
+                        drop_failed_judge = os.getenv("RUBRIC_JUDGE_DROP_FAILED", "0") == "1"
+                        if drop_failed_judge:
+                            if self.config.algorithm.adv_estimator != 'grpo' or self.use_critic:
+                                raise ValueError("Judge group exclusion currently requires GRPO without a critic")
+                            batch.meta_info['allow_judge_group_drop'] = True
                         try:
-                            reward_result = self.reward_fn(batch, return_dict=True)
+                            reward_result = _call_reward_once(self.reward_fn, batch)
                             reward_tensor = reward_result['reward_tensor']
                             reward_extra_infos_dict = reward_result['reward_extra_info']
+                            reward_trace_info = reward_result.get('reward_trace_info', [])
                         except Exception as e:
-                            print(f'Error in reward_fn: {e}')
-                            reward_tensor = self.reward_fn(batch)
-                            reward_extra_infos_dict = {}
+                            if os.getenv('RUBRIC_RUN_DIR'):
+                                atomic_json(os.path.join(os.environ['RUBRIC_RUN_DIR'], 'preflight'
+                                    if batch_preflight else 'reward_errors', 'batch_failure.json'),
+                                    dict(passed=False, status='failed', global_step=self.global_steps,
+                                         error_type=type(e).__name__, response_count=len(batch),
+                                         reward_calls=1, optimizer_updated_for_failed_batch=False))
+                            raise
 
                         batch.batch['token_level_scores'] = reward_tensor
+
+                        from verl.utils.judge_filter import select_aligned_reward_extras
+                        if drop_failed_judge:
+                            from verl.utils.judge_filter import valid_group_indices
+                            failed = reward_extra_infos_dict.get('judge_failed', [False] * len(batch))
+                            keep, dropped_groups = valid_group_indices(
+                                batch.non_tensor_batch['uid'], failed, self.actor_rollout_wg.world_size)
+                            if self.global_steps == first_batch_step:
+                                first_batch_group_filter = dict(
+                                    uids=list(batch.non_tensor_batch['uid']),
+                                    traces=list(reward_trace_info), failed=list(map(bool, failed)),
+                                    keep=keep, actor_world_size=self.actor_rollout_wg.world_size)
+                            metrics['judge/failed_responses'] = int(sum(failed))
+                            metrics['judge/dropped_groups'] = dropped_groups
+                            metrics['judge/dropped_responses'] = len(batch) - len(keep)
+                            if dropped_groups:
+                                original_batch_size = len(batch)
+                                if os.getenv('RUBRIC_RUN_DIR'):
+                                    keep_set = set(keep)
+                                    quarantine = [i for i in range(len(batch)) if i not in keep_set]
+                                    atomic_json(os.path.join(os.environ['RUBRIC_RUN_DIR'], 'judge_quarantine',
+                                        f'step_{self.global_steps:08d}.json'), dict(
+                                        global_step=self.global_steps, excluded_from_optimizer=True,
+                                        dataset_modified=False, dropped_groups=dropped_groups,
+                                        rows=[dict(uid=str(batch.non_tensor_batch['uid'][i]),
+                                            prompt_token_ids=batch.batch['prompts'][i].detach().cpu().tolist(),
+                                            response_token_ids=batch.batch['responses'][i].detach().cpu().tolist(),
+                                            reward_trace=reward_trace_info[i] if reward_trace_info else None)
+                                              for i in quarantine]))
+                                print(f"[JUDGE_FILTER] step={self.global_steps} "
+                                      f"dropped_groups={dropped_groups} "
+                                      f"dropped_responses={len(batch) - len(keep)} kept={len(keep)}", flush=True)
+                                reward_extra_infos_dict, skipped_reward_extras = select_aligned_reward_extras(
+                                    reward_extra_infos_dict, keep, original_batch_size)
+                                if skipped_reward_extras:
+                                    print(
+                                        f"[JUDGE_FILTER][WARN] step={self.global_steps} "
+                                        f"ignored_misaligned_reward_extras={skipped_reward_extras} "
+                                        f"expected={original_batch_size}",
+                                        flush=True,
+                                    )
+                                batch = batch.select_idxs(keep)
+                                if reward_trace_info:
+                                    if len(reward_trace_info) != original_batch_size:
+                                        raise ValueError(
+                                            "Reward traces must align with the rollout batch before Judge group exclusion: "
+                                            f"got {len(reward_trace_info)}, expected {original_batch_size}"
+                                    )
+                                    reward_trace_info = [reward_trace_info[i] for i in keep]
+
+                        # Custom reward functions may still return legacy
+                        # sparse diagnostics even when no group was dropped.
+                        # Never attach an array whose first dimension differs
+                        # from the current rollout batch.
+                        reward_extra_infos_dict, skipped_reward_extras = select_aligned_reward_extras(
+                            reward_extra_infos_dict, range(len(batch)), len(batch))
+                        if skipped_reward_extras:
+                            print(
+                                f"[REWARD_EXTRA][WARN] step={self.global_steps} "
+                                f"ignored_misaligned_reward_extras={skipped_reward_extras} "
+                                f"expected={len(batch)}",
+                                flush=True,
+                            )
 
                         print(f'{list(reward_extra_infos_dict.keys())=}')
                         if reward_extra_infos_dict:
@@ -1182,12 +2063,61 @@ class RayPPOTrainer(object):
                         else:
                             batch.batch['token_level_rewards'] = batch.batch['token_level_scores']
 
+                        if os.getenv('RUBRIC_BENIGN_CONTRAST_AUDIT_ENABLE', '0') == '1':
+                            from verl.utils.benign_contrast import validate_optimization_tensors
+                            validate_optimization_tensors(
+                                token_level_scores=batch.batch['token_level_scores'],
+                                token_level_rewards=batch.batch['token_level_rewards'])
+
                         # compute advantages, executed on the driver process
                         batch = compute_advantage(batch,
                                                   adv_estimator=self.config.algorithm.adv_estimator,
                                                   gamma=self.config.algorithm.gamma,
                                                   lam=self.config.algorithm.lam,
                                                   num_repeat=self.config.actor_rollout_ref.rollout.n)
+
+                        if os.getenv('RUBRIC_PRESENTATION_DAMPING_ENABLE', '0') == '1':
+                            metrics['presentation/max_abs_adv_contribution'] = float(np.abs(
+                                batch.non_tensor_batch['presentation_advantage_contribution']).max())
+                            metrics['presentation/reward_removed_mean'] = float(np.mean(
+                                batch.non_tensor_batch['presentation_reward_removed']))
+                            metrics['presentation/positive_reward_component_mean'] = float(np.mean(
+                                batch.non_tensor_batch['presentation_reward_component']))
+
+                        if os.getenv('RUBRIC_TARGETED_REFUSAL_ENABLE', '0') == '1':
+                            from verl.utils.targeted_refusal import DELTA
+                            from verl.utils.benign_contrast import validate_optimization_tensors
+                            validate_optimization_tensors(advantages=batch.batch['advantages'])
+                            targeted_deltas = np.asarray(batch.non_tensor_batch[DELTA], dtype=float)
+                            metrics['targeted_refusal/changed_responses'] = int(np.count_nonzero(targeted_deltas))
+                            metrics['targeted_refusal/delta_abs_sum'] = float(np.abs(targeted_deltas).sum())
+                            metrics['targeted_refusal/max_abs_adv_delta'] = float(np.abs(targeted_deltas).max())
+
+                        if os.getenv('RUBRIC_BENIGN_CONTRAST_AUDIT_ENABLE', '0') == '1':
+                            from verl.utils.benign_contrast import optimization_statistics
+                            validate_optimization_tensors(advantages=batch.batch['advantages'])
+                            deltas = batch.non_tensor_batch.get('benign_contrast_delta', [None] * len(batch))
+                            mask = batch.batch['response_mask']
+                            averages = ((batch.batch['advantages'] * mask).sum(-1)
+                                        / mask.sum(-1).clamp_min(1)).detach().cpu().tolist()
+                            metrics.update(optimization_statistics(
+                                batch.non_tensor_batch['uid'], deltas, averages,
+                                reward_trace_info=reward_trace_info or None))
+
+                        self._dump_rollout_traces(
+                            batch,
+                            epoch=epoch + 1,
+                            reward_detail_keys=reward_extra_infos_dict.keys(),
+                            reward_trace_info=reward_trace_info,
+                        )
+
+                    if batch_preflight or (os.getenv('RUBRIC_PRESENTATION_FIRST_BATCH_GATE', '0') == '1' and self.global_steps == first_batch_step):
+                        _write_training_batch_gate(batch, reward_trace_info, self.global_steps,
+                                                   dict(train=len(self.train_dataset), val=len(self.val_dataset)),
+                                                   first_batch_group_filter, checkpoint_recovery, generation_snapshot)
+                        print(f'[PREFLIGHT] Real 8x8 rollout/reward/advantage batch passed before this run first optimizer update; restored_global_step={(checkpoint_recovery or {}).get("restored_step", 0)}.', flush=True)
+                        if batch_preflight:
+                            return
 
                     # update critic
                     if self.use_critic:
@@ -1229,6 +2159,13 @@ class RayPPOTrainer(object):
                 metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
 
                 # TODO: make a canonical logger that supports various backend
+                evidence_dir = os.getenv("RUBRIC_RUN_DIR")
+                if evidence_dir:
+                    atomic_json(
+                        os.path.join(evidence_dir, "metrics", f"step_{self.global_steps:08d}.json"),
+                        {"global_step": int(self.global_steps), "epoch": epoch + 1,
+                         "metrics": redact_config(self._rollout_trace_json_value(metrics))},
+                    )
                 new_metrics = {}
                 for key, value in metrics.items():
                     if isinstance(value, float):

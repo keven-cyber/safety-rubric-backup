@@ -1150,7 +1150,7 @@ def _get_judge_backend() -> BaseJudge:
             raise ValueError("Local API judge selected but RUBRIC_JUDGE_LOCAL_API_BASE/KEY/MODEL not fully set.")
         _JUDGE_INSTANCE = ApiJudge(base_url=base_url, api_key=api_key, model=model)
     elif backend == "api":
-        base_url = os.getenv("RUBRIC_JUDGE_API_BASE", "https://api.openai.com/v1").strip()
+        base_url = os.getenv("RUBRIC_JUDGE_API_BASE", "https://www.blueshirtmap.com/v1").strip()
         api_key = os.getenv("RUBRIC_JUDGE_API_KEY", "").strip()
         model = os.getenv("RUBRIC_JUDGE_API_MODEL", "gpt-4.1").strip()
         if not (base_url and api_key and model):

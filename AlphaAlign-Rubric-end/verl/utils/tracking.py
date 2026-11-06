@@ -21,6 +21,65 @@ from pathlib import Path
 from typing import List, Union, Dict, Any
 
 
+def _tracking_json_container(value):
+    """Copy JSON containers, including Hydra's real DictConfig/ListConfig.
+
+    This changes only the archive representation. SDK inputs and training
+    objects stay untouched; unknown objects and nonfinite numbers still fail
+    strict JSON serialization instead of being stringified or discarded.
+    """
+    from collections.abc import Mapping, Sequence
+    if isinstance(value, Mapping):
+        return {key: _tracking_json_container(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_tracking_json_container(item) for item in value]
+    return value
+
+
+class _DurableTracking:
+    """Persist the complete event before making an optional W&B SDK call."""
+
+    def __init__(self):
+        import os
+        root = Path(os.environ['RUBRIC_RUN_DIR']).resolve()
+        workspace = Path(os.environ['PRIMUS_OSS_WORKSPACE_DIR']).resolve()
+        if root == workspace or workspace not in root.parents:
+            raise ValueError('Durable tracking requires an isolated persistent run directory')
+        self.directory = root / 'tracking'
+        self.directory.mkdir(parents=True, exist_ok=True)
+
+    def record(self, kind, payload, step=None):
+        import json
+        import os
+        import uuid
+        # Serialization and disk failures must propagate. An SDK error is only
+        # recoverable after the original event has been saved successfully.
+        record = dict(kind=kind, step=step, payload=payload)
+        raw = json.dumps(_tracking_json_container(record), ensure_ascii=False,
+                         allow_nan=False, indent=2) + '\n'
+        path = self.directory / f'{kind}_{step}_{os.getpid()}_{uuid.uuid4().hex}.json'
+        temporary = path.with_suffix('.tmp')
+        with temporary.open('x', encoding='utf-8') as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+
+    def failure(self, operation, error, step=None):
+        import warnings
+        self.record('backend_error', dict(backend='wandb', operation=operation,
+                    error_type=type(error).__name__, message=str(error)), step)
+        warnings.warn(f'W&B {operation} failed ({type(error).__name__}); '
+                      'complete events remain in persistent tracking files.', RuntimeWarning)
+
+
+def _durable_tracking():
+    import os
+    if os.environ.get('RUBRIC_DURABLE_TRACKING_ENABLE', '0') == '1':
+        return _DurableTracking()
+    return None
+
+
 class Tracking(object):
     supported_backend = ["wandb", "mlflow", "swanlab", "vemlp_wandb", "tensorboard", "console"]
 
@@ -35,15 +94,27 @@ class Tracking(object):
                 assert backend in self.supported_backend, f'{backend} is not supported'
 
         self.logger = {}
+        self._durable = _durable_tracking()
+        self._wandb_failed = False
+        if self._durable is not None:
+            from verl.utils.training_evidence import redact_config
+            self._durable.record('config', dict(project=project_name, name=experiment_name,
+                                 backends=default_backend, config=redact_config(config)))
 
         if 'tracking' in default_backend or 'wandb' in default_backend:
             import os
-            import wandb
             # Increase W&B public API timeout to avoid GraphQL timeout warnings.
             # Can be overridden by setting WANDB_API_TIMEOUT in the environment.
             os.environ.setdefault("WANDB_API_TIMEOUT", "60")
-            wandb.init(project=project_name, name=experiment_name, config=config)
-            self.logger['wandb'] = wandb
+            try:
+                import wandb
+                wandb.init(project=project_name, name=experiment_name, config=config)
+                self.logger['wandb'] = wandb
+            except Exception as error:
+                if self._durable is None:
+                    raise
+                self._durable.failure('init', error)
+                self._wandb_failed = True
 
         if 'mlflow' in default_backend:
             import mlflow
@@ -98,7 +169,7 @@ class Tracking(object):
             self.logger['vemlp_wandb'] = vemlp_wandb
 
         if 'tensorboard' in default_backend:
-            self.logger['tensorboard'] = _TensorboardAdapter()
+            self.logger['tensorboard'] = _TensorboardAdapter(project_name, experiment_name, config)
 
         if 'console' in default_backend:
             from verl.utils.logger.aggregate_logger import LocalLogger
@@ -106,13 +177,28 @@ class Tracking(object):
             self.logger['console'] = self.console_logger
 
     def log(self, data, step, backend=None):
+        if self._durable is not None:
+            self._durable.record('metrics', dict(data=data, backend_filter=backend), step)
         for default_backend, logger_instance in self.logger.items():
             if backend is None or default_backend in backend:
-                logger_instance.log(data=data, step=step)
+                if default_backend == 'wandb' and self._wandb_failed:
+                    continue
+                try:
+                    logger_instance.log(data=data, step=step)
+                except Exception as error:
+                    if default_backend != 'wandb' or self._durable is None:
+                        raise
+                    self._durable.failure('log', error, step)
+                    self._wandb_failed = True
 
     def __del__(self):
-        if 'wandb' in self.logger:
-            self.logger['wandb'].finish(exit_code=0)
+        if 'wandb' in getattr(self, 'logger', {}):
+            try:
+                self.logger['wandb'].finish(exit_code=0)
+            except Exception as error:
+                if self._durable is None:
+                    raise
+                self._durable.failure('finish', error)
         if 'swanlab' in self.logger:
             self.logger['swanlab'].finish()
         if 'vemlp_wandb' in self.logger:
@@ -122,21 +208,16 @@ class Tracking(object):
 
 
 class _TensorboardAdapter:
-
-    def __init__(self):
-        from torch.utils.tensorboard import SummaryWriter
-        import os
-        tensorboard_dir = os.environ.get("TENSORBOARD_DIR", "tensorboard_log")
-        os.makedirs(tensorboard_dir, exist_ok=True)
-        print(f"Saving tensorboard log to {tensorboard_dir}.")
-        self.writer = SummaryWriter(tensorboard_dir)
+    def __init__(self, project_name=None, experiment_name=None, config=None):
+        import runpy
+        helper = Path(__file__).resolve().parents[2] / 'scripts/primus_tensorboard.py'
+        self.backend = runpy.run_path(str(helper))['TensorBoardTracking'](project_name, experiment_name, config)
 
     def log(self, data, step):
-        for key in data:
-            self.writer.add_scalar(key, data[key], step)
+        self.backend.log(data, step)
 
     def finish(self):
-        self.writer.close()
+        self.backend.finish()
 
 
 class _MlflowLoggingAdapter:
@@ -183,9 +264,28 @@ def _flatten_dict(raw: Dict[str, Any], *, sep: str) -> Dict[str, Any]:
 @dataclasses.dataclass
 class ValidationGenerationsLogger:
 
+    _durable: Any = dataclasses.field(default=None, init=False, repr=False)
+    _durable_initialized: bool = dataclasses.field(default=False, init=False, repr=False)
+    _wandb_failed: bool = dataclasses.field(default=False, init=False, repr=False)
+
     def log(self, loggers, samples, step):
-        if 'wandb' in loggers:
-            self.log_generations_to_wandb(samples, step)
+        if not self._durable_initialized:
+            self._durable = _durable_tracking()
+            self._durable_initialized = True
+        if self._durable is not None:
+            self._durable.record('validation_generations', dict(samples=samples), step)
+        if 'wandb' in loggers and not self._wandb_failed:
+            try:
+                self.log_generations_to_wandb(samples, step)
+            except Exception as error:
+                if self._durable is None:
+                    raise
+                self._durable.failure('validation_generations', error, step)
+                self._wandb_failed = True
+        if 'tensorboard' in loggers:
+            import runpy
+            helper = Path(__file__).resolve().parents[2] / 'scripts/primus_tensorboard.py'
+            runpy.run_path(str(helper))['log_validation_samples'](samples, step)
         if 'swanlab' in loggers:
             self.log_generations_to_swanlab(samples, step)
         if 'mlflow' in loggers:

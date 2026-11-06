@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from verl.utils.policy_template import policy_chat_template_kwargs
 from omegaconf import ListConfig
 import os
 from typing import List, Union, Optional, Callable
@@ -139,7 +140,7 @@ class RLHFDataset(Dataset):
             tokenizer = self.tokenizer
             prompt_key = self.prompt_key
             self.dataframe = self.dataframe.filter(
-                lambda doc: len(tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True)
+                lambda doc: len(tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True, **policy_chat_template_kwargs())
                                ) <= self.max_prompt_length,
                 num_proc=self.num_workers,
                 desc=f"Filtering prompts longer than {self.max_prompt_length} tokens")
@@ -166,7 +167,7 @@ class RLHFDataset(Dataset):
 
         chat = row_dict.pop(self.prompt_key)
 
-        prompt_with_chat_template = self.tokenizer.apply_chat_template(chat, add_generation_prompt=True, tokenize=False)
+        prompt_with_chat_template = self.tokenizer.apply_chat_template(chat, add_generation_prompt=True, tokenize=False, **policy_chat_template_kwargs())
 
         is_multi_modal = self.image_key in row_dict
         if is_multi_modal:  # expand image token

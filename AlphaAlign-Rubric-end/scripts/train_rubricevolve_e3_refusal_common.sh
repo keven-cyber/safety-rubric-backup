@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# E3 follow-up: identical targeted-C data, optimizer, safety reward and schedule.
+# Only the online benign-rule admission mechanism and the two declared factors
+# below vary across the four parallel 8-GPU runs.
+: "${TRAIN_EXPERIMENT_NAME:?set a unique experiment name}"
+: "${RUBRIC_TARGETED_EXPERIMENT_ID:?set a unique experiment id}"
+export RUBRIC_ONLINE_DATASET_NAME=rubricalign-targeted-c-v4-3120
+export RUBRIC_ONLINE_DATASET_VERSION=updated_training_rubric_dataset_independent_v4_targeted_hard_negative
+export RUBRIC_ONLINE_DATASET_TRAIN_ROWS=3120
+export RUBRIC_ONLINE_DATASET_VAL_ROWS=304
+export RUBRIC_EVOLVE_EXPERIMENT_FULL=1
+export RUBRIC_EVOLVE_ALLOWED_PROFILES=ordinary_harm,adaptive_harm,benign,sensitive_benign
+export RUBRIC_EVOLVE_ALLOWED_CATEGORIES=outcome_safety_rule,outcome_useful_rule,refusal_rule
+export RUBRIC_EVOLVE_CATEGORY_AWARE_SPLIT=1
+export RUBRIC_EVOLVE_REFUSAL_POLARITY_FIX=1
+export RUBRIC_EVOLVE_VARIANCE_WEIGHT_ENABLE=0
+export RUBRIC_EVOLVE_CROSS_PROFILE_GUARD=1
+export RUBRIC_EVOLVE_CROSS_PROFILE_MIN_GOOD=4
+export RUBRIC_EVOLVE_CROSS_PROFILE_MAX_GOOD=8
+export RUBRIC_EVOLVE_CROSS_PROFILE_MIN_PASS_RATE=0.80
+export RUBRIC_EVOLVE_MAX_PROFILES_PER_STEP=4
+export RUBRIC_EVOLVE_MAX_PROMOTIONS_PER_STEP=1
+export RUBRIC_EVOLVE_MIN_CATEGORY_COUNT=2
+export RUBRIC_EVOLVE_MIN_GAP=0.45
+export RUBRIC_EVOLVE_MIN_GOOD_PASS_RATE=0.8
+export RUBRIC_EVOLVE_MAX_BAD_PASS_RATE=0.2
+
+if [[ "${RUBRIC_EVOLVE_REPLAY_MODE_BALANCE:-0}" = 1 ]]; then
+  export RUBRIC_EVOLVE_REPLAY_MODE_BALANCE=1
+  export RUBRIC_EVOLVE_REPLAY_MAX_PER_LABEL=48
+  export RUBRIC_EVOLVE_REPLAY_PROPOSAL_PER_LABEL=12
+  export RUBRIC_EVOLVE_REPLAY_VALIDATION_PER_LABEL=6
+else
+  export RUBRIC_EVOLVE_REPLAY_MODE_BALANCE=0
+  export RUBRIC_EVOLVE_REPLAY_MAX_PER_LABEL=32
+  export RUBRIC_EVOLVE_REPLAY_PROPOSAL_PER_LABEL=8
+  export RUBRIC_EVOLVE_REPLAY_VALIDATION_PER_LABEL=4
+fi
+
+if [[ "${RUBRIC_EVOLVE_ANTI_REFUSAL_PENALTY_HIGH:-0}" = 1 ]]; then
+  export RUBRIC_BALANCED_BENIGN_OVER_REFUSAL_PENALTY=1.0
+  export RUBRIC_BALANCED_BOUNDARY_OVER_REFUSAL_PENALTY=0.9
+else
+  export RUBRIC_BALANCED_BENIGN_OVER_REFUSAL_PENALTY=0.8
+  export RUBRIC_BALANCED_BOUNDARY_OVER_REFUSAL_PENALTY=0.7
+fi
+
+exec bash "${SCRIPT_DIR}/train_online_rubric_evolve.sh" "$@"
