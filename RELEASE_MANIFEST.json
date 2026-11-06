@@ -738,6 +738,15 @@
     "AlphaAlign-Rubric-end/Evaluation/lm-evaluation-harness/tests/testconfigs/arc_test.yaml": "569cf8b3ae9aeda3b962956561c3cdd29832482c7871c7bef3463933612e54c3",
     "AlphaAlign-Rubric-end/Evaluation/lm-evaluation-harness/tests/testyamls/test-01.yaml": "65a63092f0f479ee44a85090245b8206bf5c3aab6ee6e8ddd9ccbabd2e543bd8",
     "AlphaAlign-Rubric-end/Evaluation/lm_eval_last3_general.sh": "8c4bb9b296422849a8e91df9dd476b301ba149d4735899acbe23bbd8c4b31de8",
+    "AlphaAlign-Rubric-end/Evaluation/rubricalign-targeted-c-v4-3120/manifest.json": "0454b3180f7a8493d6f98f1027a3dad8bf2418424c2c3a866937df198473383c",
+    "AlphaAlign-Rubric-end/Evaluation/rubricalign-targeted-c-v4-3120/train/adaptive_harm.parquet": "d03d66b88ba085a5296fab5bab71195c9161f11ddacdfa8ab63c11174f8971e1",
+    "AlphaAlign-Rubric-end/Evaluation/rubricalign-targeted-c-v4-3120/train/benign_sampled.parquet": "08730c8b3464b13c3c797bbadaa51dd295e8736cb998c81e6245a0aab4ead124",
+    "AlphaAlign-Rubric-end/Evaluation/rubricalign-targeted-c-v4-3120/train/harm_sampled.parquet": "c68817015138ffc8ecba480f3e8dfabcd1c3db3e7ed436ce08ce498cdc887cbd",
+    "AlphaAlign-Rubric-end/Evaluation/rubricalign-targeted-c-v4-3120/train/sensitive_sampled.parquet": "2d708a49ff36d3acc94aca8deb17712c23166deedd8e7a819f18b5c65644994d",
+    "AlphaAlign-Rubric-end/Evaluation/rubricalign-targeted-c-v4-3120/val/adaptive_harm.parquet": "ad74c44e0fdd732364194ee6af2c521b555af71e215681d2d4d3f3fc5b3c5c89",
+    "AlphaAlign-Rubric-end/Evaluation/rubricalign-targeted-c-v4-3120/val/benign_sampled.parquet": "fd37ee10e1a517f44cb1d6d7b004703eb12cce180575b927e6aa3087aa383bfa",
+    "AlphaAlign-Rubric-end/Evaluation/rubricalign-targeted-c-v4-3120/val/harm_sampled.parquet": "da78b86f544431bec553a39a5eea0626f9907c38bdb4f8e9a85d52ba5f4a56d6",
+    "AlphaAlign-Rubric-end/Evaluation/rubricalign-targeted-c-v4-3120/val/sensitive_sampled.parquet": "b130e7fb08139ffeb0e71f08d5acf3a3aecd06f4159b5d0e3456df748a7c50cb",
     "AlphaAlign-Rubric-end/Evaluation/safety/eval.py": "845211e5fce798dfb7f3fa6b03c619ffdd36c06566f6d7d00e0317fe16f682bc",
     "AlphaAlign-Rubric-end/Evaluation/safety/eval_answer-llama.py": "bcd857e70e330030f30ac34b2fe739b1f41f4b36e5549e8a1e6595fa0641b8a3",
     "AlphaAlign-Rubric-end/Evaluation/safety/eval_answer.py": "29974a29f7ecf2e9b20b98e428f6ec87c8c2afc01eeee63f1d6e80a56d6befbd",
@@ -1483,8 +1492,8 @@
     "AlphaAlign-Rubric-end/verl/workers/sharding_manager/megatron_vllm.py": "330ded188b53b1647b79dac72e77df84e35cb4d00a9bc4e6d930e429541cfa18",
     "AlphaAlign-Rubric-end/verl/workers/sharding_manager/patch/__init__.py": "c10ea93bdfe449a7ce22a288669e8ef281dd7fab76ce2061b0e88ecc67840a48",
     "AlphaAlign-Rubric-end/verl/workers/sharding_manager/patch/fsdp_vllm_patch.py": "3e2d48961047732d86b2e40c73ecb280fc49b7fd0c542d082a88056aa6e75fee",
-    "README.md": "720b6f25f7c33347b05f3db84ab0bc17df383caa7c9675e84bf76897d7ce7158",
+    "README.md": "a596ac87cda77766ab15d9c484be1061fb71cba8eab348c6a377e7171a89da76",
     "RELEASE_PROVENANCE.json": "541878be3080d4e96a497a4e099fb1e4e3c706e9ee58c2a172e6521c8e0bad05",
-    "data/README.md": "f7ee0e7b509e369dbb06398207289d77d967940fc2cebe428be8e83bb4591529"
+    "data/README.md": "e4fd1c6c2e0c4034ee1b6df93d5cf8aa885844f857b8f4975009f8177bef6c77"
   }
 }

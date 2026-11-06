@@ -1,0 +1,258 @@
+{
+  "version": "updated_training_rubric_dataset_independent_v4_targeted_hard_negative",
+  "rubric_version": "independent_v4_targeted_hard_negative",
+  "seed": 20260601,
+  "max_request_chars": 3200,
+  "recommended_max_prompt_length": 1536,
+  "training_distribution": {
+    "benign": 600,
+    "sensitive_benign": 600,
+    "ordinary_harm": 480,
+    "adaptive_harm": 1440
+  },
+  "validation_distribution": {
+    "benign": 64,
+    "sensitive_benign": 64,
+    "ordinary_harm": 64,
+    "adaptive_harm": 112
+  },
+  "training_rows": 3120,
+  "validation_rows": 304,
+  "training_profiles": {
+    "benign": {
+      "rows": 600,
+      "sources": {
+        "srde_dolly_benign_part1.parquet": 288,
+        "srde_dolly_benign_part2.parquet": 312
+      },
+      "canonical_categories": {
+        "general": 600
+      },
+      "mutation_strategies": {},
+      "max_request_chars": 2664
+    },
+    "sensitive_benign": {
+      "rows": 600,
+      "sources": {
+        "benign_val.parquet": 13,
+        "srde_dolly_benign_part1.parquet": 188,
+        "srde_dolly_benign_part2.parquet": 196,
+        "srde_xstest_benign.parquet": 203
+      },
+      "canonical_categories": {
+        "general": 131,
+        "health_self_harm": 81,
+        "identity_religion": 96,
+        "law_government": 155,
+        "privacy_abuse": 31,
+        "privacy_security": 15,
+        "violence_societal": 91
+      },
+      "mutation_strategies": {},
+      "max_request_chars": 3175
+    },
+    "ordinary_harm": {
+      "rows": 480,
+      "sources": {
+        "srde_harm_raw_1500.parquet": 480
+      },
+      "canonical_categories": {
+        "cyber_abuse": 68,
+        "deception_misinformation": 55,
+        "financial_crime": 24,
+        "general": 92,
+        "hate_harassment": 49,
+        "health_safety": 4,
+        "illegal_activity": 51,
+        "privacy_abuse": 16,
+        "self_harm": 17,
+        "sexual_abuse": 19,
+        "violence_weapons": 85
+      },
+      "mutation_strategies": {},
+      "max_request_chars": 654
+    },
+    "adaptive_harm": {
+      "rows": 720,
+      "sources": {
+        "srde_enhanced_harm_1500.parquet": 720
+      },
+      "canonical_categories": {
+        "cyber_abuse": 106,
+        "deception_misinformation": 87,
+        "financial_crime": 37,
+        "general": 132,
+        "hate_harassment": 71,
+        "health_safety": 7,
+        "illegal_activity": 81,
+        "privacy_abuse": 25,
+        "self_harm": 21,
+        "sexual_abuse": 29,
+        "violence_weapons": 124
+      },
+      "mutation_strategies": {
+        "evidence_based_persuasion": 121,
+        "expert_endorsement": 106,
+        "logical_appeal": 113,
+        "role_play": 129,
+        "slang": 117,
+        "uncommon_dialects": 134
+      },
+      "max_request_chars": 596
+    }
+  },
+  "validation_profiles": {
+    "benign": {
+      "rows": 64,
+      "sources": {
+        "srde_dolly_benign_part1.parquet": 30,
+        "srde_dolly_benign_part2.parquet": 34
+      },
+      "canonical_categories": {
+        "general": 64
+      },
+      "mutation_strategies": {},
+      "max_request_chars": 2716
+    },
+    "sensitive_benign": {
+      "rows": 64,
+      "sources": {
+        "benign_val.parquet": 6,
+        "srde_dolly_benign_part1.parquet": 7,
+        "srde_dolly_benign_part2.parquet": 4,
+        "xstest_benign.parquet": 47
+      },
+      "canonical_categories": {
+        "general": 39,
+        "health_self_harm": 3,
+        "identity_religion": 7,
+        "law_government": 8,
+        "privacy_security": 2,
+        "violence_societal": 5
+      },
+      "mutation_strategies": {},
+      "max_request_chars": 2298
+    },
+    "ordinary_harm": {
+      "rows": 64,
+      "sources": {
+        "srde_harm_raw_1500.parquet": 64
+      },
+      "canonical_categories": {
+        "cyber_abuse": 9,
+        "deception_misinformation": 7,
+        "financial_crime": 3,
+        "general": 12,
+        "hate_harassment": 7,
+        "health_safety": 1,
+        "illegal_activity": 7,
+        "privacy_abuse": 2,
+        "self_harm": 2,
+        "sexual_abuse": 3,
+        "violence_weapons": 11
+      },
+      "mutation_strategies": {},
+      "max_request_chars": 248
+    },
+    "adaptive_harm": {
+      "rows": 64,
+      "sources": {
+        "srde_enhanced_harm_1500.parquet": 64
+      },
+      "canonical_categories": {
+        "cyber_abuse": 9,
+        "deception_misinformation": 8,
+        "financial_crime": 4,
+        "general": 12,
+        "hate_harassment": 6,
+        "illegal_activity": 7,
+        "privacy_abuse": 2,
+        "self_harm": 2,
+        "sexual_abuse": 3,
+        "violence_weapons": 11
+      },
+      "mutation_strategies": {
+        "evidence_based_persuasion": 10,
+        "expert_endorsement": 9,
+        "logical_appeal": 9,
+        "role_play": 12,
+        "slang": 10,
+        "uncommon_dialects": 14
+      },
+      "max_request_chars": 372
+    }
+  },
+  "leakage_audit": {
+    "normalized_prompt_overlap": 0,
+    "sample_family_overlap": 0,
+    "near_duplicate_threshold": 0.92,
+    "near_duplicate_pairs": 0
+  },
+  "rubric_audit": {
+    "training": {
+      "rows": 2400,
+      "format_or_cot_conflicts": 0,
+      "safety_usefulness_exact_overlaps": 0,
+      "empty_rules": 0,
+      "rows_missing_required_rubric_categories": 0,
+      "metadata_or_rubric_mismatches": 0
+    },
+    "validation": {
+      "rows": 256,
+      "format_or_cot_conflicts": 0,
+      "safety_usefulness_exact_overlaps": 0,
+      "empty_rules": 0,
+      "rows_missing_required_rubric_categories": 0,
+      "metadata_or_rubric_mismatches": 0
+    }
+  },
+  "excluded_final_benchmarks": [
+    "AdvBench",
+    "GCG",
+    "PAIR",
+    "StrongREJECT",
+    "WildGuardTest",
+    "wildjailbreak_adv"
+  ],
+  "api_pipeline": {
+    "credentials_persisted": false,
+    "generation_pipeline_version": "train_rubric_plus_configurable_hard_negative_v5",
+    "verification_pipeline_version": "grounded_train_only_rubric_v7",
+    "factuality_audit_version": "request_grounded_factuality_v1",
+    "applied_required_rubric_repairs": 0,
+    "applied_optional_rubric_reviews": 299,
+    "retained_original_after_failed_optional_review": 50,
+    "reviewed_training_rubrics": 2640,
+    "added_adaptive_harm": 528,
+    "added_adaptive_harm_train": 480,
+    "added_adaptive_harm_validation": 48,
+    "added_rows_by_strategy": {
+      "benign_research_pretext": 88,
+      "encoded_transformation_wrapper": 88,
+      "implicit_chained_enablement": 88,
+      "multi_turn_persuasion_summary": 88,
+      "refusal_leakage_pressure": 88,
+      "trigger_roleplay_override": 88
+    },
+    "added_gcg_style": 0,
+    "added_pair_style": 0,
+    "added_sensitive_benign_neighbors": 0,
+    "reclassified_source_rows": 0,
+    "incomplete_adaptive_jobs": 0,
+    "accept_reviewed_rubrics": true,
+    "allow_unverified_results": false,
+    "train_val_prompt_overlap": 0,
+    "train_val_generated_family_overlap": 0,
+    "train_val_generated_near_duplicates": 0,
+    "validation_files_preserved": false,
+    "generated_validation_profiles": [
+      "adaptive_harm"
+    ],
+    "validation_file_sha256": {
+      "benign_sampled.parquet": "fd37ee10e1a517f44cb1d6d7b004703eb12cce180575b927e6aa3087aa383bfa",
+      "sensitive_sampled.parquet": "b130e7fb08139ffeb0e71f08d5acf3a3aecd06f4159b5d0e3456df748a7c50cb",
+      "harm_sampled.parquet": "da78b86f544431bec553a39a5eea0626f9907c38bdb4f8e9a85d52ba5f4a56d6",
+      "adaptive_harm.parquet": "ad74c44e0fdd732364194ee6af2c521b555af71e215681d2d4d3f3fc5b3c5c89"
+    }
+  }
+}

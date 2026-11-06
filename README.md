@@ -15,7 +15,7 @@ This snapshot is based on source commit `b515aaccffe5149a7ac6fb00b54ad8da671eb38
 
 ## Dataset
 
-The current corpus is `rubricalign-targeted-c-v4-3120`, version `updated_training_rubric_dataset_independent_v4_targeted_hard_negative`: **3,120 training / 304 validation examples**. Do not substitute older 2,400/2,640-row versions. See [data/README.md](data/README.md) for raw-file availability and integrity records.
+The current corpus is `rubricalign-targeted-c-v4-3120`, version `updated_training_rubric_dataset_independent_v4_targeted_hard_negative`: **3,120 training / 304 validation examples**. The eight original Parquet files and manifest are included under `AlphaAlign-Rubric-end/Evaluation/rubricalign-targeted-c-v4-3120/`; all hashes match the actual training integrity record. See [data/README.md](data/README.md) for verification and usage. Do not substitute older 2,400/2,640-row versions.
 
 ## Environment and entry points
 
