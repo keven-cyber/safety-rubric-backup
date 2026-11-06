@@ -8,6 +8,7 @@ import shlex
 ARMS = {
     'f1_g1': ('g1', 'legacy', '0', '0', '360', '4', 'False'),
     'f3_g3': ('g3', 'bounded_residual', '0.25', '1', '360', '4', 'False'),
+    'p1_evidence990': ('g3', 'bounded_residual', '0.25', '1', '180', '2', 'False'),
     'p1_earlytarget': ('g3', 'bounded_residual', '0.25', '1', '180', '2', 'False'),
     'p2_klanchor': ('g3', 'bounded_residual', '0.25', '1', '360', '4', 'True'),
     'p3_combined': ('g3', 'bounded_residual', '0.25', '1', '180', '2', 'True'),
@@ -17,7 +18,7 @@ ARMS = {
 
 def environment(arm):
     baseline, mode, floor, gradual, start, interval, kl = ARMS[arm]
-    return {
+    settings = {
         'RUBRIC_AGENTIC_EIGHT_ARM': arm,
         'RUBRIC_TARGETED_EXPERIMENT_ID': 'agentic8_' + arm,
         'TRAIN_EXPERIMENT_NAME': 'rubric-agentic8-' + arm,
@@ -41,6 +42,22 @@ def environment(arm):
         'RUBRIC_SELECTION_STRICT_BEST': '0',
         'TRAIN_BEST_METRIC_KEY': 'val-core/balanced/constraint_rank_score',
     }
+    if arm == 'p1_evidence990':
+        settings.update({
+            'TRAIN_TOTAL_TRAINING_STEPS': '990',
+            'TRAIN_TOTAL_STEPS': '990',
+            'RUBRIC_TRAIN_EXPECTED_TOTAL_STEPS': '990',
+            'FINAL_SAFETY_EVAL_STEPS': '900,best,990',
+            'FINAL_EVAL_EXPECTED_LAST_STEP': '990',
+            'FINAL_EVAL_MIN_STEP': '900',
+            'RUBRIC_EVOLVE_EVIDENCE_V5_ENABLE': '1',
+            'RUBRIC_EVOLVE_COLLECT_START_STEP': '120',
+            'RUBRIC_EVOLVE_COLLECT_INTERVAL_STEPS': '20',
+            'RUBRIC_EVOLVE_MIN_DISTINCT_PROMPTS': '2',
+            'RUBRIC_EVOLVE_REFUSAL_POLARITY_FIX': '1',
+        })
+    return settings
+
 
 
 def validation_record():

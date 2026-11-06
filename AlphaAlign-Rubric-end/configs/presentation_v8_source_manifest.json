@@ -56,13 +56,17 @@
     "verl/utils/first_batch_snapshot.py": "131b9eca462fa533a561164273ee63b4357fa8e79f94ddc6b5599fc8468bd789",
     "scripts/validate_legacy_compact.py": "093b1f24022e5ff1df6cf446ff31c49910810d825587013fe9f720f220e0f470",
     "scripts/train_rubricevolve_presentation_v8_legacy.sh": "b2ecd49bd158e4ceb0ba6b53ec643a652b2f617165d3bfcf6cc2b97610c11a30",
-    "scripts/agentic_eight.py": "8dfcd12252858a37ce411d2b5b7f46b8abfdde3aa3a25d74fa0000805aa53604",
+    "scripts/agentic_eight.py": "5eb5eb9f6f9f0f29c66a0588b69c3616f0e8ee900e4dff2a61872d2135781170",
     "scripts/train_rubricevolve_agentic_eight.sh": "b8f1854f611bf610fc590115781dd97ff06d044bdb32dc4b16a035d3ec975adf",
     "verl/trainer/main_ppo.py": "d7dd72137963234e8120508c14d387d6b74ccde840ff963e109d1d2ea09cee6c",
     "verl/utils/frozen_validation_review.py": "da89e4ad036faa182f9c3a1a502e331e61f976dd3195c47be9525421ed2fff6d",
     "scripts/reevaluate_frozen_validation_v8.sh": "92fbb1ea48e15f111c4687b06df2de49772aeb5a551274a313af3fe12367d8f0",
     "scripts/rubric_evidence_env.sh": "93eb2caaa87cb2ccd6d1d8de9fb9ab2ac1efe79cb08b7797b230df8d09923a69",
     "verl/utils/final_stage_resume.py": "78e27ac25eb77b1414831351dc55abbaad08155a22d2dd4f7645ca950c45817b",
-    "scripts/resume_final_general_v8.sh": "5231dc35df2b434f90c01adc46672d6c0f56cfd7e968fa6fd2ea7ffe195925e6"
+    "scripts/resume_final_general_v8.sh": "5231dc35df2b434f90c01adc46672d6c0f56cfd7e968fa6fd2ea7ffe195925e6",
+    "scripts/train_cross_model_five_990.sh": "b52929f56e9f58e47d81a8ba03d0af16096804a64809500f4b47393c9009d8d8",
+    "scripts/five_model_run_contract.py": "e791ddd695d85c2bef15ab2feb2a1cdb6a0e298071740f7939452569de6ef2b1",
+    "scripts/cross_model_twelve_models.json": "8477c5717fea479335c2184784c457c5442e7f7e4e132254ac7b71e47a601ee6",
+    "verl/utils/evolution_evidence.py": "26d0b08d0b071f0e8d0a50897063afacd7a050752761450bb04decc823d62706"
   }
 }
