@@ -1,25 +1,12 @@
-# RubricAlign
+# Rubric-Align
 
-Current implementation for **Rubric-Align: Safety Alignment through Dynamically Co-Evolving Rubrics**.
+Code and data for **Rubric-Align: Safety Alignment through Dynamically Co-Evolving Rubrics**.
 
-## Repository contents
+Rubric-Align trains language models with prompt-specific, natural-language rubrics. The rubrics provide criterion-level rewards and evolve during training. This repository includes rubric construction, policy training, AlphaAlign and NSPO baselines, and safety and general-capability evaluation.
 
-- `AlphaAlign-Rubric-end/verl/`: training, reward computation and rubric evolution.
-- `AlphaAlign-Rubric-end/scripts/`: experiment entry points, dataset preparation and checkpoint handling.
-- `AlphaAlign-Rubric-end/AlphaAlign/` and `NSPO/`: baseline implementations.
-- `AlphaAlign-Rubric-end/Evaluation/`: safety and general evaluation.
-- `data/`: dataset documentation and one consolidated integrity record.
-- `RELEASE_PROVENANCE.json`: source version and export-only changes.
+## Installation
 
-This snapshot is based on source commit `b515aaccffe5149a7ac6fb00b54ad8da671eb386` and includes the current TensorBoard implementation and P1 configuration. Earlier experiments used their own recorded source versions. This repository update is not a new verification of paper results.
-
-## Dataset
-
-The current corpus is `rubricalign-targeted-c-v4-3120`, version `updated_training_rubric_dataset_independent_v4_targeted_hard_negative`: **3,120 training / 304 validation examples**. The eight original Parquet files and a manifest with the internal storage path removed are included under `AlphaAlign-Rubric-end/Evaluation/rubricalign-targeted-c-v4-3120/`; all hashes match the actual training integrity record. See [data/README.md](data/README.md) for verification and usage. Do not substitute older 2,400/2,640-row versions.
-
-## Environment and entry points
-
-Training requires CUDA GPUs and separate policy, judge and guard services. CPU verification does not establish GPU reproducibility. The maintained environment uses Python 3.10+, PyTorch and vLLM; native method scripts specify their respective dependencies. NSPO has separate environment requirements.
+Training requires CUDA GPUs, PyTorch, vLLM, and separate judge services. Install the main package with:
 
 ```bash
 cd AlphaAlign-Rubric-end
@@ -27,23 +14,46 @@ python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
-Entry points:
+The method-specific launch scripts specify additional dependencies. NSPO uses a separate environment. Configure service URLs and API keys through environment variables; see [.env.example](.env.example). Model weights must be downloaded separately.
 
-- `scripts/train_cross_model_twelve_p1.sh MODEL_METHOD`: four model families (`llama32_3b`, `qwen25_7b`, `qwen3_4b`, `qwen3_8b`) × `p1`, `alphaalign`, `nspo`.
-- `scripts/train_rubricevolve_agentic_eight.sh p1_earlytarget`: P1 configuration.
-- `train_val.sh`, `train_val_alphaalign.sh`, `train_val_nspo.sh`: method training and final evaluation.
-- `scripts/cross_model_dataset.py --report PATH`: resolve the exact corpus via `FILE_PATH` and write an integrity record without overwriting an existing report.
+## Dataset
 
-The cross-model launcher retains the original Primus workspace/job environment variables. Adapt them explicitly for another environment; this is not a platform-independent installer. Its exported package index defaults to public PyPI. Download the exact initial model snapshots and judge/guard dependencies from the model registries in `scripts/`; no model weights are included.
+The targeted-C dataset contains **3,120 training examples** and **304 validation examples**:
 
-P1 uses bounded residual rewards, a global standard-deviation floor of 0.25, gradual weighting, targeted correction from step 180 every two steps, a 0.05 correction cap, presentation factor 0.20, and KL loss disabled. Common settings are 3,120/304 examples, three epochs/1,170 steps, BF16, learning rate 1e-6, batch size eight and eight rollouts. Native baseline method differences are preserved.
+| Split | Benign | Sensitive | Harmful | Adaptive harmful | Total |
+|---|---:|---:|---:|---:|---:|
+| Train | 600 | 600 | 480 | 1,440 | 3,120 |
+| Validation | 64 | 64 | 64 | 112 | 304 |
 
-## Credentials, provenance and licensing
+The eight Parquet files are in [Evaluation/rubricalign-targeted-c-v4-3120](AlphaAlign-Rubric-end/Evaluation/rubricalign-targeted-c-v4-3120). See [data/README.md](data/README.md) for the file layout and integrity checks.
 
-API credentials must be supplied through environment variables. Hardcoded key fallbacks were removed from the export. Logs, checkpoints, weights and local machine configuration are excluded. The original experimental source remains unchanged. This distribution omits obsolete backups, unrelated harness task definitions and obsolete deployment manifests. The eight training/validation Parquet files are unchanged; only the dataset manifest storage path is redacted.
+## Training and evaluation
 
-Original code and available vendored dependency licenses are retained. Third-party dataset terms and model access conditions remain applicable; a code license does not independently relicense data or models.
+The main entry points are:
 
-## Release hygiene
+| Method | Entry point |
+|---|---|
+| Rubric-Align | `AlphaAlign-Rubric-end/train_val.sh` |
+| AlphaAlign | `AlphaAlign-Rubric-end/train_val_alphaalign.sh` |
+| NSPO | `AlphaAlign-Rubric-end/train_val_nspo.sh` |
 
-Use `.env.example` to identify configurable endpoints and credentials. Keep real credentials in local environment variables or ignored files. Run `python tools/check_release.py` before committing or pushing. The optional local pre-commit hook can be enabled with `git config core.hooksPath .githooks`. Retained public upstream copyright and license attributions are required and are not private operator information.
+The P1 configuration is selected with:
+
+```bash
+bash scripts/train_rubricevolve_agentic_eight.sh p1_earlytarget
+```
+
+P1 uses a standard-deviation floor of 0.25, gradual reward weighting, targeted correction from step 180 every two steps, a correction cap of 0.05, and no KL loss. Shared training settings are three epochs, BF16, learning rate 1e-6, batch size eight, and eight rollouts per prompt.
+
+The cross-model scripts support Llama-3.2-3B-Instruct, Qwen2.5-7B-Instruct, Qwen3-4B, and Qwen3-8B. Launch scripts use Primus workspace and job variables; adjust paths and service settings for your environment. Evaluation covers safety benchmarks, XSTest, MMLU, and GSM8K.
+
+## Repository layout
+
+- `AlphaAlign-Rubric-end/verl/`: policy training, rubric rewards, and evolution.
+- `AlphaAlign-Rubric-end/scripts/`: training launchers and data utilities.
+- `AlphaAlign-Rubric-end/AlphaAlign/` and `NSPO/`: baseline implementations.
+- `AlphaAlign-Rubric-end/Evaluation/`: evaluation code and targeted-C data.
+
+## License
+
+See [LICENSE](AlphaAlign-Rubric-end/LICENSE). Vendored dependencies retain their own license notices. Dataset and model terms apply separately.

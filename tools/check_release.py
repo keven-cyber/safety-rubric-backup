@@ -39,7 +39,9 @@ def check_bytes(name: str, raw: bytes, errors: list[str]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--history", action="store_true", help="Also check reachable commits and blobs")
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument("--history", action="store_true", help="Also check all reachable commits and blobs")
+    scope.add_argument("--commits", metavar="REV_RANGE", help="Also check commits and blobs introduced by a push")
     args = parser.parse_args()
     has_git = (ROOT / ".git").exists()
     paths = git("ls-files").splitlines() if has_git else [
@@ -65,13 +67,14 @@ def main() -> None:
             errors.append(f"{name}: dataset integrity mismatch")
     if hashlib.sha256((ROOT / DATA / "manifest.json").read_bytes()).hexdigest() != integrity["manifest_sha256"]:
         errors.append("dataset manifest integrity mismatch")
-    if args.history:
-        rows = git("log", "--all", "--format=%H%x09%an%x09%ae%x09%cn%x09%ce").splitlines()
+    if args.history or args.commits:
+        revision = [args.commits] if args.commits else ["--all"]
+        rows = git("log", *revision, "--format=%H%x09%an%x09%ae%x09%cn%x09%ce").splitlines()
         for row in rows:
             rev, an, ae, cn, ce = row.split("\t")
             if (an, ae) != IDENTITY or (cn, ce) != IDENTITY:
                 errors.append(f"{rev[:12]}: non-release commit identity")
-        objects = git("rev-list", "--objects", "--all").splitlines()
+        objects = git("rev-list", "--objects", *revision).splitlines()
         process = subprocess.Popen(["git", "-C", str(ROOT), "cat-file", "--batch"],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         assert process.stdin is not None and process.stdout is not None

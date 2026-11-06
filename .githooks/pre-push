@@ -1,3 +1,12 @@
 #!/bin/sh
 set -eu
-python3 tools/check_release.py --history
+python3 tools/check_release.py
+# Check every introduced commit. Use --history separately before publication.
+while read -r local_ref local_oid remote_ref remote_oid; do
+    case "$local_oid" in 0000000000000000000000000000000000000000) continue ;; esac
+    case "$remote_oid" in
+        0000000000000000000000000000000000000000) range="$local_oid" ;;
+        *) range="$remote_oid..$local_oid" ;;
+    esac
+    python3 tools/check_release.py --commits "$range"
+done
