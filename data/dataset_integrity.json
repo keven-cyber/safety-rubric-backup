@@ -1,0 +1,52 @@
+{
+  "version": "updated_training_rubric_dataset_independent_v4_targeted_hard_negative",
+  "counts": {
+    "train": 3120,
+    "val": 304
+  },
+  "manifest_sha256": "0454b3180f7a8493d6f98f1027a3dad8bf2418424c2c3a866937df198473383c",
+  "files": {
+    "train/benign_sampled.parquet": {
+      "rows": 600,
+      "bytes": 1502914,
+      "sha256": "08730c8b3464b13c3c797bbadaa51dd295e8736cb998c81e6245a0aab4ead124"
+    },
+    "train/sensitive_sampled.parquet": {
+      "rows": 600,
+      "bytes": 2316111,
+      "sha256": "2d708a49ff36d3acc94aca8deb17712c23166deedd8e7a819f18b5c65644994d"
+    },
+    "train/harm_sampled.parquet": {
+      "rows": 480,
+      "bytes": 812548,
+      "sha256": "c68817015138ffc8ecba480f3e8dfabcd1c3db3e7ed436ce08ce498cdc887cbd"
+    },
+    "train/adaptive_harm.parquet": {
+      "rows": 1440,
+      "bytes": 3560157,
+      "sha256": "d03d66b88ba085a5296fab5bab71195c9161f11ddacdfa8ab63c11174f8971e1"
+    },
+    "val/benign_sampled.parquet": {
+      "rows": 64,
+      "bytes": 176781,
+      "sha256": "fd37ee10e1a517f44cb1d6d7b004703eb12cce180575b927e6aa3087aa383bfa"
+    },
+    "val/sensitive_sampled.parquet": {
+      "rows": 64,
+      "bytes": 217849,
+      "sha256": "b130e7fb08139ffeb0e71f08d5acf3a3aecd06f4159b5d0e3456df748a7c50cb"
+    },
+    "val/harm_sampled.parquet": {
+      "rows": 64,
+      "bytes": 136067,
+      "sha256": "da78b86f544431bec553a39a5eea0626f9907c38bdb4f8e9a85d52ba5f4a56d6"
+    },
+    "val/adaptive_harm.parquet": {
+      "rows": 112,
+      "bytes": 326357,
+      "sha256": "ad74c44e0fdd732364194ee6af2c521b555af71e215681d2d4d3f3fc5b3c5c89"
+    }
+  },
+  "original_manifest_sha256": "9f0e5a0c69bf97d53ec99dbc7bffa239ed1ca6bb1bf0ee1ab4cfb708ade15fb9",
+  "manifest_redaction": "Removed internal source_dataset path; eight Parquet files unchanged"
+}

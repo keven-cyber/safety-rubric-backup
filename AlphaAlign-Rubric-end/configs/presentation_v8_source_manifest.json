@@ -1,7 +1,7 @@
 {
-  "version": "presentation-v8-authorized-new-frozen-validation-review",
+  "version": "rubricalign-release-source-v1",
   "files": {
-    "train_val.sh": "1428b7cf0ed6f57b6cadfe387bb5b545128b707f86f48f92a1e4e643c4428a4d",
+    "train_val.sh": "3c4bef9dca9d756f1da351d9e80fd2e7fb2e20e20f0a279f275999928a711c84",
     "scripts/graded_presentation_gate.py": "3f64167e9f73dc42594d219d72128c0df26647b35a20f5f238ddf5fa47edf5e5",
     "scripts/train_rubricevolve_presentation_v8.sh": "2faf44f24b5068a1b50e4cac3e58a767cc1ac2418d26757af230edf5c85da2de",
     "scripts/train_rubricevolve_targeted_refusal.sh": "60f39564af839efca29f829e8228972171911af0ea3e72075f40dbc76ecddec8",
@@ -15,7 +15,7 @@
     "scripts/smoke_targeted_refusal.py": "4f6b6fecad837fc34c152632784ee7037b412888181301b547f306974936f26f",
     "configs/presentation_v8_replay_profiles.json": "61f9386f4f4087cf99d557bd8e06275738a0657969f28fab5b10f322a4bf8d7c",
     "verl/utils/presentation_reward.py": "4068b18c7770bae5e876973a89f2970a4a73358da1089f8eddce1d9870f918bd",
-    "verl/utils/reward_score/rubric_judge.py": "5a9b4cf25554de3ee8041f38a68394be35e31212fdde4cdcfe7abfea8e8a5af5",
+    "verl/utils/reward_score/rubric_judge.py": "9e5d66224cc76cb37990bacb3a55c97597b4766bcc3d435b18f8cfa03d0bfcfe",
     "verl/utils/reward_score/rubric_judge_save_evolve_rubric.py": "15d50ddc53c5ad2e32eab82518ca012bb5cee3d1e0e6575a4ecc7c8b570cd1e4",
     "verl/trainer/ppo/core_algos.py": "67f9e030496035427e587fbe14e995e933b499d119c58b89504003e228c4609a",
     "verl/trainer/ppo/ray_trainer.py": "f416275d9e3850851978d8525f420ad3d8882da3e098eeef89060c85c2e0de33",

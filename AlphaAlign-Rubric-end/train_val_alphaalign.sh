@@ -195,7 +195,7 @@ then
 fi
 ray stop --force
 
-export VERL_HOME="${VERL_HOME:-/root/code}"
+export VERL_HOME="${VERL_HOME:-${PROJECT_ROOT}}"
 export MODEL_BASE_PATH="${MODEL_BASE_PATH:-/root/models}"
 if [ -z "${POLICY_MODEL_DIR}" ]; then
   POLICY_MODEL_DIR="${MODEL_BASE_PATH}/policy"

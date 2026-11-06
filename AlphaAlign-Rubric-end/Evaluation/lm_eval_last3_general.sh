@@ -84,7 +84,7 @@ LOCAL_DATA_DIR="${LM_EVAL_LOCAL_DATA_ROOT:-${SCRIPT_DIR}/lm_eval_local_data_mode
 LOCAL_TASKS_DIR="${LOCAL_DATA_DIR}/tasks"
 # transformers 4.57.x declares huggingface-hub>=0.34.0,<1.0. Installing the hub
 # unpinned lets pip resolve the 1.x line, which makes `import transformers` raise
-# at eval time. Keep this aligned with examples/ppo_trainer/requirement.txt.
+# at eval time. Keep this explicit pin when installing evaluation dependencies.
 HF_HUB_PIN="${LM_EVAL_HF_HUB_PIN:-0.36.2}"
 # Set before importing vLLM or launching Ray workers. Forking a process that
 # already owns Ray communication threads can stall engine initialization.

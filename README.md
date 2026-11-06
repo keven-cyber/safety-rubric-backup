@@ -8,14 +8,14 @@ Current implementation for **Rubric-Align: Safety Alignment through Dynamically 
 - `AlphaAlign-Rubric-end/scripts/`: experiment entry points, dataset preparation and checkpoint handling.
 - `AlphaAlign-Rubric-end/AlphaAlign/` and `NSPO/`: baseline implementations.
 - `AlphaAlign-Rubric-end/Evaluation/`: safety and general evaluation.
-- `data/`: exact dataset identity, counts and expected file checksums.
+- `data/`: dataset documentation and one consolidated integrity record.
 - `RELEASE_PROVENANCE.json`: source version and export-only changes.
 
 This snapshot is based on source commit `b515aaccffe5149a7ac6fb00b54ad8da671eb386` and includes the current TensorBoard implementation and P1 configuration. Earlier experiments used their own recorded source versions. This repository update is not a new verification of paper results.
 
 ## Dataset
 
-The current corpus is `rubricalign-targeted-c-v4-3120`, version `updated_training_rubric_dataset_independent_v4_targeted_hard_negative`: **3,120 training / 304 validation examples**. The eight original Parquet files and manifest are included under `AlphaAlign-Rubric-end/Evaluation/rubricalign-targeted-c-v4-3120/`; all hashes match the actual training integrity record. See [data/README.md](data/README.md) for verification and usage. Do not substitute older 2,400/2,640-row versions.
+The current corpus is `rubricalign-targeted-c-v4-3120`, version `updated_training_rubric_dataset_independent_v4_targeted_hard_negative`: **3,120 training / 304 validation examples**. The eight original Parquet files and a manifest with the internal storage path removed are included under `AlphaAlign-Rubric-end/Evaluation/rubricalign-targeted-c-v4-3120/`; all hashes match the actual training integrity record. See [data/README.md](data/README.md) for verification and usage. Do not substitute older 2,400/2,640-row versions.
 
 ## Environment and entry points
 
@@ -40,6 +40,10 @@ P1 uses bounded residual rewards, a global standard-deviation floor of 0.25, gra
 
 ## Credentials, provenance and licensing
 
-API credentials must be supplied through environment variables. Hardcoded key fallbacks were removed from the export. Logs, checkpoints, weights and local machine configuration are excluded. The original experimental source remains unchanged. Original runtime manifests describe the original pinned source; export-only changes have separate provenance and must not be confused with those original hashes.
+API credentials must be supplied through environment variables. Hardcoded key fallbacks were removed from the export. Logs, checkpoints, weights and local machine configuration are excluded. The original experimental source remains unchanged. This distribution omits obsolete backups, unrelated harness task definitions and obsolete deployment manifests. The eight training/validation Parquet files are unchanged; only the dataset manifest storage path is redacted.
 
 Original code and available vendored dependency licenses are retained. Third-party dataset terms and model access conditions remain applicable; a code license does not independently relicense data or models.
+
+## Release hygiene
+
+Use `.env.example` to identify configurable endpoints and credentials. Keep real credentials in local environment variables or ignored files. Run `python tools/check_release.py` before committing or pushing. The optional local pre-commit hook can be enabled with `git config core.hooksPath .githooks`. Retained public upstream copyright and license attributions are required and are not private operator information.
