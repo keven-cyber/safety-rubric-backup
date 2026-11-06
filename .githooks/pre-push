@@ -6,7 +6,14 @@ while read -r local_ref local_oid remote_ref remote_oid; do
     case "$local_oid" in 0000000000000000000000000000000000000000) continue ;; esac
     case "$remote_oid" in
         0000000000000000000000000000000000000000) range="$local_oid" ;;
-        *) range="$remote_oid..$local_oid" ;;
+        *)
+            if git cat-file -e "$remote_oid^{commit}" 2>/dev/null; then
+                range="$remote_oid..$local_oid"
+            else
+                # A sanitized replacement may intentionally omit the old objects.
+                range="$local_oid"
+            fi
+            ;;
     esac
     python3 tools/check_release.py --commits "$range"
 done

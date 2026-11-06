@@ -3,7 +3,7 @@
   "files": {
     ".env.example": "9ab4fd276a73d84fe53712469d6b1bbc7a236a3f6a6d25bf00ed9ea55b49d4fc",
     ".githooks/pre-commit": "aec2047825dd8cf5c8b9cb45b33e33b33135c89e92a30ea6a619107b2af5ebcc",
-    ".githooks/pre-push": "4372f8a962be5d88914bf15c3ee61712515f2d0b835a5cf7657777c4726f0d74",
+    ".githooks/pre-push": "1c0550011b752d43425ec93b51d8c5d88da1a2beb05f607168b36d10eeafb28b",
     ".gitignore": "6f2bee35a041e1b38472f7a1ecd7e891dc2baf998c455e406b8a35dc22cb7e4b",
     "AlphaAlign-Rubric-end/AlphaAlign/Evaluation/alpaca_eval/LICENSE": "6e175e9dbe26bb42de8367bf2215301a71b3f403243a2eefc56378b307638be8",
     "AlphaAlign-Rubric-end/AlphaAlign/Evaluation/alpaca_eval/requirements.txt": "bbff9b3c477007bed0daa32996622281ac0e9b7e9df31ae62c99ecc196e0fb17",
